@@ -1,0 +1,25 @@
+# Core (install first)
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+
+# Database (without greenlet/async)
+sqlalchemy>=2.0.25
+
+# AI/ML - Phase 1 (no build tools needed)
+opencv-python>=4.9.0
+numpy>=1.24.0
+pillow>=10.0.0
+
+# MediaPipe for face/pose detection
+mediapipe>=0.10.9
+
+# AI/ML - Phase 2 (install separately)
+# ultralytics>=8.1.0
+# onnxruntime>=1.16.0
+
+# AI/ML - Phase 3 (requires C++ Build Tools)
+# insightface>=0.7.3
