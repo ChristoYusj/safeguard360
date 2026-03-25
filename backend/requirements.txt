@@ -14,7 +14,7 @@ opencv-python>=4.9.0
 numpy>=1.24.0
 pillow>=10.0.0
 
-# MediaPipe for face/pose detection
+# MediaPipe for face/pose detection (Tasks API)
 mediapipe>=0.10.9
 
 # AI/ML - Phase 2 (install separately)

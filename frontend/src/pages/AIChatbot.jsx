@@ -1,11 +1,11 @@
 /*
- * SafeGuard 360 - Attendance & PPE Page
+ * SafeGuard 360 - AI Chatbot Page
  * "Precision Command" Design System
  */
 
 import { motion } from "framer-motion";
 
-function Attendance() {
+function AIChatbot() {
   return (
     <div className="min-h-screen p-6 xl:p-8">
       {/* Header */}
@@ -14,13 +14,13 @@ function Attendance() {
         animate={{ opacity: 1, y: 0 }}
         className="mb-8"
       >
-        <p className="eyebrow mb-2">Workforce Entry Control</p>
+        <p className="eyebrow mb-2">Operations Assistant</p>
         <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
-          Attendance & PPE Check-In
+          AI Chatbot
         </h1>
         <p className="mt-3 max-w-3xl text-base text-secondary">
-          Monitor check-ins, validate workforce identity, and verify PPE
-          compliance at the same gate decision point.
+          The operator copilot shell is ready for future workflow automation,
+          incident summaries, and system-wide support queries.
         </p>
       </motion.section>
 
@@ -29,4 +29,4 @@ function Attendance() {
   );
 }
 
-export default Attendance;
+export default AIChatbot;

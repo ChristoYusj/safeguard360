@@ -7,11 +7,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "ENV_BACKEND_HTTP_ORIGIN",
+        target: "http://localhost:8010",
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://ENV_BACKEND_ORIGIN",
+        target: "ws://localhost:8010",
         ws: true,
       },
     },

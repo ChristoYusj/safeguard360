@@ -10,10 +10,13 @@ from enum import Enum
 
 try:
     import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+    from mediapipe import tasks
     MEDIAPIPE_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     MEDIAPIPE_AVAILABLE = False
-    print("[DriverDetector] MediaPipe not installed")
+    print(f"[DriverDetector] MediaPipe not installed: {e}")
 
 
 class DriverEventType(str, Enum):
@@ -57,7 +60,7 @@ class DriverDetector:
     
     # Thresholds
     EAR_THRESHOLD = 0.2  # Eyes considered closed below this
-    EYES_CLOSED_TIME_THRESHOLD = 2.0  # Seconds of closed eyes = fatigue
+    EYES_CLOSED_TIME_THRESHOLD = 0.8  # Short sustained eye closure = fatigue
     MAR_THRESHOLD = 0.6  # Mouth open (yawning) above this
     HEAD_YAW_THRESHOLD = 30  # Degrees of head turn = distraction
     HEAD_PITCH_THRESHOLD = 20  # Degrees of head tilt = distraction
@@ -65,31 +68,67 @@ class DriverDetector:
     def __init__(self):
         self.state = DriverState()
         self.eyes_closed_start: Optional[float] = None
+        self.yawn_start: Optional[float] = None  # Track yawn start time
         self.last_fatigue_event: float = 0
         self.last_distraction_event: float = 0
-        self.event_cooldown = 3.0  # Seconds between same event type
+        self.event_cooldown = 5.0  # Minimum seconds between same event type
+
+        # Track previous frame state for edge detection (fire on state END)
+        self.prev_eyes_closed = False
+        self.prev_yawning = False
+        self.prev_distracted = False
+
+        # Store duration from completed events (for final logging)
+        self.last_eyes_closed_duration = 0.0
+        self.last_yawn_duration = 0.0
+
         self.frame_count = 0
         self.last_log_time = 0
-        
+        self.face_landmarker = None
+        self.last_landmarks = None
+        self.last_face_seen_at = 0.0
+        self.landmark_hold_seconds = 0.5
+        self.detection_max_width = 256
+
         print(f"[DriverDetector] MEDIAPIPE_AVAILABLE = {MEDIAPIPE_AVAILABLE}")
-        
+
         if not MEDIAPIPE_AVAILABLE:
-            self.face_mesh = None
             print("[DriverDetector] Initialized without MediaPipe")
             return
-        
+
         try:
-            self.mp_face_mesh = mp.solutions.face_mesh
-            self.face_mesh = self.mp_face_mesh.FaceMesh(
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.3,  # Lower threshold for better detection
-                min_tracking_confidence=0.3
+            # Download model if not present
+            import os
+            import urllib.request
+
+            model_dir = os.path.join(os.path.dirname(__file__), "models")
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = os.path.join(model_dir, "face_landmarker.task")
+
+            if not os.path.exists(model_path):
+                print("[DriverDetector] Downloading face_landmarker model...")
+                model_url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+                urllib.request.urlretrieve(model_url, model_path)
+                print(f"[DriverDetector] Model downloaded to {model_path}")
+
+            # Initialize FaceLandmarker with Tasks API
+            base_options = mp_python.BaseOptions(model_asset_path=model_path)
+            options = mp_vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_faces=1,
+                min_face_detection_confidence=0.3,
+                min_face_presence_confidence=0.3,
+                min_tracking_confidence=0.3,
+                output_face_blendshapes=True
             )
-            print("[DriverDetector] Initialized with MediaPipe FaceMesh")
+            self.face_landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+            print("[DriverDetector] Initialized with MediaPipe FaceLandmarker (Tasks API)")
         except Exception as e:
-            print(f"[DriverDetector] Failed to initialize FaceMesh: {e}")
-            self.face_mesh = None
+            print(f"[DriverDetector] Failed to initialize FaceLandmarker: {e}")
+            import traceback
+            traceback.print_exc()
+            self.face_landmarker = None
     
     def _calculate_ear(self, landmarks, eye_indices, w: int, h: int) -> float:
         """Calculate Eye Aspect Ratio."""
@@ -167,34 +206,51 @@ class DriverDetector:
         cv2.putText(frame, f"Frame: {w}x{h}", (w - 120, 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
-        if not MEDIAPIPE_AVAILABLE or self.face_mesh is None:
+        if not MEDIAPIPE_AVAILABLE or self.face_landmarker is None:
             # Draw "MediaPipe not available" message
             cv2.putText(frame, "MediaPipe not installed", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             return frame, events
-        
+
+        # Run detection on a smaller image for smoother driver mode.
+        detection_frame = frame
+        if w > self.detection_max_width:
+            detection_height = max(1, int(h * (self.detection_max_width / w)))
+            detection_frame = cv2.resize(
+                frame,
+                (self.detection_max_width, detection_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
         # Convert to RGB for MediaPipe
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
+        rgb = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2RGB)
+
         try:
-            results = self.face_mesh.process(rgb)
+            # Create MediaPipe Image
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            results = self.face_landmarker.detect(mp_image)
         except Exception as e:
-            print(f"[DriverDetector] FaceMesh error: {e}")
+            print(f"[DriverDetector] FaceLandmarker error: {e}")
             cv2.putText(frame, f"Error: {str(e)[:30]}", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             return frame, events
-        
-        if not results.multi_face_landmarks:
+
+        if not results.face_landmarks:
             self.state.face_detected = False
             self.eyes_closed_start = None
+            if now - self.last_face_seen_at <= self.landmark_hold_seconds and self.last_landmarks is not None:
+                frame = self._draw_annotations(frame, self.last_landmarks, w, h)
+                return frame, events
             cv2.putText(frame, "No face detected", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
             cv2.putText(frame, "Look at camera", (10, 55),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
             return frame, events
-        
+
         self.state.face_detected = True
-        landmarks = results.multi_face_landmarks[0].landmark
+        landmarks = results.face_landmarks[0]  # Tasks API: list of NormalizedLandmark
+        self.last_landmarks = landmarks
+        self.last_face_seen_at = now
         num_landmarks = len(landmarks)
         
         # Log face detection every 2 seconds
@@ -209,58 +265,152 @@ class DriverDetector:
         
         self.state.mar = self._calculate_mar(landmarks, w, h)
         self.state.head_yaw, self.state.head_pitch = self._estimate_head_pose(landmarks, w, h)
-        
+
         # Log metrics periodically
         if self.frame_count % 60 == 0:
             print(f"[DriverDetector] EAR: {avg_ear:.2f}, MAR: {self.state.mar:.2f}, Yaw: {self.state.head_yaw:.1f}, Pitch: {self.state.head_pitch:.1f}")
-        
-        # Fatigue detection: eyes closed
+
+        # === FATIGUE DETECTION (fire event when state ENDS) ===
+
+        # Detect current states
         eyes_closed = avg_ear < self.EAR_THRESHOLD
+        is_yawning = self.state.mar > self.MAR_THRESHOLD
+
+        # Track eyes-closed duration (for live UI display)
         if eyes_closed:
             if self.eyes_closed_start is None:
                 self.eyes_closed_start = now
             self.state.eyes_closed_duration = now - self.eyes_closed_start
         else:
+            # Eyes just OPENED - check if we should fire an event
+            if self.prev_eyes_closed and self.eyes_closed_start is not None:
+                final_duration = now - self.eyes_closed_start
+                if final_duration > self.EYES_CLOSED_TIME_THRESHOLD:
+                    if (now - self.last_fatigue_event) > self.event_cooldown:
+                        events.append(DriverEvent(
+                            event_type=DriverEventType.FATIGUE,
+                            timestamp=now,
+                            confidence=0.8,
+                            details=f"Eyes closed for {final_duration:.1f}s"
+                        ))
+                        self.last_fatigue_event = now
+                        print(f"[DriverDetector] Eyes-closed event: {final_duration:.1f}s")
             self.eyes_closed_start = None
             self.state.eyes_closed_duration = 0
-        
-        # Check for fatigue event
-        is_fatigued = (
-            self.state.eyes_closed_duration > self.EYES_CLOSED_TIME_THRESHOLD or
-            self.state.mar > self.MAR_THRESHOLD
-        )
-        self.state.is_fatigued = is_fatigued
-        
-        if is_fatigued and (now - self.last_fatigue_event) > self.event_cooldown:
-            detail = "Eyes closed" if self.state.eyes_closed_duration > self.EYES_CLOSED_TIME_THRESHOLD else "Yawning"
-            events.append(DriverEvent(
-                event_type=DriverEventType.FATIGUE,
-                timestamp=now,
-                confidence=0.8,
-                details=detail
-            ))
-            self.last_fatigue_event = now
-        
-        # Distraction detection: head pose
+
+        # Track yawning - fire event when yawn ENDS
+        if is_yawning:
+            if self.yawn_start is None:
+                self.yawn_start = now
+        else:
+            # Yawn just ENDED - fire event if yawn lasted long enough
+            if self.prev_yawning and self.yawn_start is not None:
+                yawn_duration = now - self.yawn_start
+                if yawn_duration > 0.5:  # At least 0.5s to count as a real yawn
+                    if (now - self.last_fatigue_event) > self.event_cooldown:
+                        events.append(DriverEvent(
+                            event_type=DriverEventType.FATIGUE,
+                            timestamp=now,
+                            confidence=0.8,
+                            details=f"Yawning for {yawn_duration:.1f}s"
+                        ))
+                        self.last_fatigue_event = now
+                        print(f"[DriverDetector] Yawn event: {yawn_duration:.1f}s")
+            self.yawn_start = None
+
+        # Update previous states for next frame edge detection
+        self.prev_eyes_closed = eyes_closed
+        self.prev_yawning = is_yawning
+
+        # Update fatigue state flag (for live UI warning)
+        eyes_closed_long = self.state.eyes_closed_duration > self.EYES_CLOSED_TIME_THRESHOLD
+        self.state.is_fatigued = eyes_closed_long or is_yawning
+
+        # === DISTRACTION DETECTION (fire when looking away, like an alert) ===
+
         is_distracted = (
             abs(self.state.head_yaw) > self.HEAD_YAW_THRESHOLD or
             abs(self.state.head_pitch) > self.HEAD_PITCH_THRESHOLD
         )
+
+        # Fire distraction event when head first turns away (alert style)
+        if is_distracted and not self.prev_distracted:
+            if (now - self.last_distraction_event) > self.event_cooldown:
+                events.append(DriverEvent(
+                    event_type=DriverEventType.DISTRACTION,
+                    timestamp=now,
+                    confidence=0.75,
+                    details=f"Head yaw: {self.state.head_yaw:.1f}, pitch: {self.state.head_pitch:.1f}"
+                ))
+                self.last_distraction_event = now
+                print(f"[DriverDetector] Distraction event")
+
+        self.prev_distracted = is_distracted
         self.state.is_distracted = is_distracted
-        
-        if is_distracted and (now - self.last_distraction_event) > self.event_cooldown:
-            events.append(DriverEvent(
-                event_type=DriverEventType.DISTRACTION,
-                timestamp=now,
-                confidence=0.75,
-                details=f"Head yaw: {self.state.head_yaw:.1f}, pitch: {self.state.head_pitch:.1f}"
-            ))
-            self.last_distraction_event = now
-        
+
         # Draw annotations
         frame = self._draw_annotations(frame, landmarks, w, h)
-        
+
         return frame, events
+
+    def draw_live_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """Draw a lightweight overlay from the latest known driver state."""
+        now = time.time()
+        h, w = frame.shape[:2]
+        cv2.putText(frame, f"Frame: {w}x{h}", (w - 120, 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+        if not MEDIAPIPE_AVAILABLE or self.face_landmarker is None:
+            cv2.putText(frame, "MediaPipe not installed", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            return frame
+
+        if self.last_landmarks is not None and now - self.last_face_seen_at <= self.landmark_hold_seconds:
+            return self._draw_annotations(frame, self.last_landmarks, w, h)
+
+        # Status panel background
+        cv2.rectangle(frame, (5, 5), (150, 110), (0, 0, 0), -1)
+        cv2.rectangle(frame, (5, 5), (150, 110), (255, 255, 255), 1)
+
+        avg_ear = (self.state.ear_left + self.state.ear_right) / 2
+        y = 22
+
+        face_label = "FACE OK" if self.state.face_detected else "NO FACE"
+        face_color = (0, 255, 0) if self.state.face_detected else (0, 165, 255)
+        cv2.putText(frame, face_label, (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, face_color, 1)
+
+        y += 18
+        ear_color = (0, 255, 0) if avg_ear > self.EAR_THRESHOLD else (0, 0, 255)
+        cv2.putText(frame, f"EAR: {avg_ear:.2f}", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, ear_color, 1)
+
+        y += 18
+        mar_color = (0, 0, 255) if self.state.mar > self.MAR_THRESHOLD else (0, 255, 0)
+        cv2.putText(frame, f"MAR: {self.state.mar:.2f}", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, mar_color, 1)
+
+        y += 18
+        yaw_color = (0, 0, 255) if abs(self.state.head_yaw) > self.HEAD_YAW_THRESHOLD else (0, 255, 0)
+        cv2.putText(frame, f"Yaw: {self.state.head_yaw:.1f}", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, yaw_color, 1)
+
+        y += 18
+        pitch_color = (0, 0, 255) if abs(self.state.head_pitch) > self.HEAD_PITCH_THRESHOLD else (0, 255, 0)
+        cv2.putText(frame, f"Pitch: {self.state.head_pitch:.1f}", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, pitch_color, 1)
+
+        if self.state.is_fatigued:
+            cv2.rectangle(frame, (w - 220, 10), (w - 10, 45), (0, 0, 200), -1)
+            cv2.putText(frame, "FATIGUE!", (w - 210, 35),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        if self.state.is_distracted:
+            cv2.rectangle(frame, (w - 220, 50), (w - 10, 85), (0, 140, 255), -1)
+            cv2.putText(frame, "DISTRACTED!", (w - 215, 75),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        return frame
     
     def _draw_annotations(self, frame: np.ndarray, landmarks, w: int, h: int) -> np.ndarray:
         """Draw face mesh and status indicators."""

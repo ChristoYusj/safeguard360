@@ -42,7 +42,6 @@ async def list_camera_sources():
     for i in range(6):
         print(f"[API] Testing camera index {i}...", end=" ")
         try:
-            # Try DirectShow first (Windows)
             cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
             opened = cap.isOpened()
             

@@ -1,0 +1,242 @@
+/*
+ * SafeGuard 360 Design Tokens
+ * "Precision Command" - An elevated industrial-command aesthetic
+ *
+ * Color philosophy: Warm obsidian base with amber authority accents
+ * Typography: DM Sans (display) + IBM Plex Sans (body)
+ */
+
+:root {
+  /* ═══════════════════════════════════════════════════════════════
+     COLOR SYSTEM - Dark Mode (Default)
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Base surfaces - warm obsidian, not cold tech-black */
+  --color-bg-deepest: #050708;
+  --color-bg-base: #0b0f14;
+  --color-bg-elevated: #111720;
+  --color-bg-card: #161d28;
+  --color-bg-card-hover: #1c2432;
+  --color-bg-surface: #1e2633;
+  --color-bg-overlay: rgba(11, 15, 20, 0.92);
+
+  /* Primary accent - amber/gold authority */
+  --color-accent-primary: #d4a853;
+  --color-accent-primary-hover: #e4b863;
+  --color-accent-primary-muted: rgba(212, 168, 83, 0.15);
+  --color-accent-primary-glow: rgba(212, 168, 83, 0.25);
+
+  /* Secondary accent - cool teal for positive states */
+  --color-accent-secondary: #2dd4bf;
+  --color-accent-secondary-hover: #3de4cf;
+  --color-accent-secondary-muted: rgba(45, 212, 191, 0.12);
+
+  /* Semantic colors */
+  --color-success: #34d399;
+  --color-success-muted: rgba(52, 211, 153, 0.12);
+  --color-warning: #f59e0b;
+  --color-warning-muted: rgba(245, 158, 11, 0.12);
+  --color-error: #ef4444;
+  --color-error-muted: rgba(239, 68, 68, 0.12);
+  --color-info: #60a5fa;
+  --color-info-muted: rgba(96, 165, 250, 0.12);
+
+  /* Text hierarchy - warm ivory tones */
+  --color-text-primary: #f5f3ef;
+  --color-text-secondary: #a8a29e;
+  --color-text-tertiary: #78716c;
+  --color-text-muted: #57534e;
+  --color-text-inverse: #0b0f14;
+
+  /* Borders */
+  --color-border-subtle: rgba(168, 162, 158, 0.08);
+  --color-border-default: rgba(168, 162, 158, 0.12);
+  --color-border-emphasis: rgba(168, 162, 158, 0.2);
+  --color-border-accent: rgba(212, 168, 83, 0.4);
+
+  /* Interactive states */
+  --color-focus-ring: rgba(212, 168, 83, 0.5);
+  --color-active-bg: rgba(212, 168, 83, 0.08);
+
+  /* ═══════════════════════════════════════════════════════════════
+     TYPOGRAPHY
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Font families */
+  --font-display: "DM Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  /* Font sizes - based on 1.2 minor third scale */
+  --text-xs: 0.694rem; /* ~11px */
+  --text-sm: 0.833rem; /* ~13px */
+  --text-base: 1rem; /* 16px */
+  --text-md: 1.125rem; /* 18px */
+  --text-lg: 1.25rem; /* 20px */
+  --text-xl: 1.5rem; /* 24px */
+  --text-2xl: 1.875rem; /* 30px */
+  --text-3xl: 2.25rem; /* 36px */
+  --text-4xl: 2.75rem; /* 44px */
+  --text-5xl: 3.5rem; /* 56px */
+
+  /* Line heights */
+  --leading-none: 1;
+  --leading-tight: 1.15;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* Letter spacing */
+  --tracking-tight: -0.025em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.05em;
+  --tracking-wider: 0.1em;
+  --tracking-widest: 0.2em;
+
+  /* Font weights */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ═══════════════════════════════════════════════════════════════
+     SPACING - 8px grid system
+     ═══════════════════════════════════════════════════════════════ */
+
+  --space-0: 0;
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.25rem; /* 20px */
+  --space-6: 1.5rem; /* 24px */
+  --space-8: 2rem; /* 32px */
+  --space-10: 2.5rem; /* 40px */
+  --space-12: 3rem; /* 48px */
+  --space-16: 4rem; /* 64px */
+  --space-20: 5rem; /* 80px */
+  --space-24: 6rem; /* 96px */
+
+  /* ═══════════════════════════════════════════════════════════════
+     BORDER RADIUS
+     ═══════════════════════════════════════════════════════════════ */
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-full: 9999px;
+
+  /* ═══════════════════════════════════════════════════════════════
+     SHADOWS & EFFECTS
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Elevation shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+  /* Glow effects */
+  --glow-accent: 0 0 20px rgba(212, 168, 83, 0.3);
+  --glow-accent-strong: 0 0 40px rgba(212, 168, 83, 0.4);
+  --glow-success: 0 0 20px rgba(52, 211, 153, 0.3);
+  --glow-error: 0 0 20px rgba(239, 68, 68, 0.3);
+
+  /* Card shadows with accent */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-card-hover:
+    0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(212, 168, 83, 0.1);
+
+  /* ═══════════════════════════════════════════════════════════════
+     TRANSITIONS & ANIMATIONS
+     ═══════════════════════════════════════════════════════════════ */
+
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-slower: 600ms;
+
+  /* ═══════════════════════════════════════════════════════════════
+     Z-INDEX SCALE
+     ═══════════════════════════════════════════════════════════════ */
+
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-fixed: 300;
+  --z-modal-backdrop: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-tooltip: 700;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  /* Base surfaces - warm cream tones */
+  --color-bg-deepest: #f5f3ef;
+  --color-bg-base: #faf9f7;
+  --color-bg-elevated: #ffffff;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #f9f8f6;
+  --color-bg-surface: #f5f3ef;
+  --color-bg-overlay: rgba(250, 249, 247, 0.95);
+
+  /* Primary accent - deeper amber for light mode */
+  --color-accent-primary: #b8860b;
+  --color-accent-primary-hover: #996f0a;
+  --color-accent-primary-muted: rgba(184, 134, 11, 0.1);
+  --color-accent-primary-glow: rgba(184, 134, 11, 0.15);
+
+  /* Secondary accent */
+  --color-accent-secondary: #0d9488;
+  --color-accent-secondary-hover: #0f766e;
+  --color-accent-secondary-muted: rgba(13, 148, 136, 0.08);
+
+  /* Semantic colors - slightly muted for light */
+  --color-success: #059669;
+  --color-success-muted: rgba(5, 150, 105, 0.08);
+  --color-warning: #d97706;
+  --color-warning-muted: rgba(217, 119, 6, 0.08);
+  --color-error: #dc2626;
+  --color-error-muted: rgba(220, 38, 38, 0.08);
+  --color-info: #2563eb;
+  --color-info-muted: rgba(37, 99, 235, 0.08);
+
+  /* Text hierarchy - warm dark tones */
+  --color-text-primary: #1c1917;
+  --color-text-secondary: #57534e;
+  --color-text-tertiary: #78716c;
+  --color-text-muted: #a8a29e;
+  --color-text-inverse: #f5f3ef;
+
+  /* Borders */
+  --color-border-subtle: rgba(28, 25, 23, 0.05);
+  --color-border-default: rgba(28, 25, 23, 0.1);
+  --color-border-emphasis: rgba(28, 25, 23, 0.15);
+  --color-border-accent: rgba(184, 134, 11, 0.3);
+
+  /* Shadows - softer for light mode */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.06);
+  --shadow-md: 0 4px 12px rgba(28, 25, 23, 0.08);
+  --shadow-lg: 0 12px 32px rgba(28, 25, 23, 0.1);
+  --shadow-xl: 0 24px 64px rgba(28, 25, 23, 0.12);
+
+  --shadow-card:
+    0 1px 3px rgba(28, 25, 23, 0.06), 0 8px 24px rgba(28, 25, 23, 0.08);
+  --shadow-card-hover:
+    0 1px 3px rgba(28, 25, 23, 0.06), 0 16px 40px rgba(28, 25, 23, 0.12),
+    0 0 0 1px rgba(184, 134, 11, 0.15);
+
+  --glow-accent: 0 0 20px rgba(184, 134, 11, 0.15);
+  --glow-accent-strong: 0 0 40px rgba(184, 134, 11, 0.2);
+}

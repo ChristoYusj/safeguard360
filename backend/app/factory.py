@@ -24,17 +24,18 @@ async def frame_broadcaster():
                     frame_count += 1
                     if frame_count % 100 == 0:
                         print(f"[Broadcaster] Sent {frame_count} frames")
-                
-                # Broadcast camera status
-                state = camera_manager.get_state()
-                status_data = state.__dict__.copy()
-                
-                # Include driver state if in driver mode
-                if camera_manager.mode == "driver":
-                    status_data["driver"] = camera_manager.get_driver_state()
-                
-                await manager.broadcast_status(status_data)
-                
+
+                # Broadcast camera status less frequently (every 4th frame)
+                if frame_count % 4 == 0:
+                    state = camera_manager.get_state()
+                    status_data = state.__dict__.copy()
+
+                    # Include driver state if in driver mode
+                    if camera_manager.mode == "driver":
+                        status_data["driver"] = camera_manager.get_driver_state()
+
+                    await manager.broadcast_status(status_data)
+
                 # Broadcast any pending driver events
                 driver_events = camera_manager.get_pending_driver_events()
                 for event in driver_events:
@@ -45,8 +46,8 @@ async def frame_broadcaster():
                         "confidence": event.confidence,
                         "details": event.details
                     })
-            
-            await asyncio.sleep(0.08)  # ~12 FPS
+
+            await asyncio.sleep(0.033)  # ~30 FPS broadcast rate
         except Exception as e:
             print(f"[Broadcaster] Error: {e}")
             await asyncio.sleep(1)
@@ -65,7 +66,7 @@ def create_app() -> FastAPI:
     # CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

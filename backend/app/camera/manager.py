@@ -58,15 +58,16 @@ class CameraManager:
         self.source_type = "none"
         self.source_id = ""
         self.error = ""
-        
-        self.target_fps = 12
+
+        self.target_fps = 20  # Favor stable capture latency over chasing peak FPS
         self.frame_interval = 1.0 / self.target_fps
-        
-        # Driver detection
+
+        # Driver detection (run every Nth frame for performance)
         self.driver_detector = None
         self.driver_state: dict = {}
         self.pending_driver_events: List[DriverEventData] = []
         self.driver_events_lock = threading.Lock()
+        self.detection_skip = 3  # Run detection every 3rd frame for smoother driver updates
         
         self._initialized = True
         print("[CameraManager] Initialized")
@@ -79,7 +80,7 @@ class CameraManager:
                 from app.inference.driver import driver_detector
                 self.driver_detector = driver_detector
                 print(f"[CameraManager] Driver detector loaded: {self.driver_detector}")
-                print(f"[CameraManager] FaceMesh available: {self.driver_detector.face_mesh is not None}")
+                print(f"[CameraManager] FaceLandmarker available: {self.driver_detector.face_landmarker is not None}")
             except Exception as e:
                 print(f"[CameraManager] Failed to load driver detector: {e}")
                 import traceback
@@ -96,13 +97,13 @@ class CameraManager:
         self.source_type = source_type
         self.source_id = source_id
         self.error = ""
-        
+
         # Open camera
         try:
             if source_type == "webcam":
                 device_id = int(source_id) if source_id.isdigit() else 0
                 print(f"[CameraManager] Opening webcam {device_id}")
-                self.cap = cv2.VideoCapture(device_id, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+                self.cap = cv2.VideoCapture(device_id, cv2.CAP_DSHOW)
             elif source_type == "video_file":
                 print(f"[CameraManager] Opening video file: {source_id}")
                 self.cap = cv2.VideoCapture(source_id)
@@ -117,7 +118,7 @@ class CameraManager:
             self.error = f"Exception opening camera: {e}"
             print(f"[CameraManager] Exception: {e}")
             return False
-        
+
         if not self.cap or not self.cap.isOpened():
             self.error = "Failed to open camera"
             print(f"[CameraManager] Failed to open camera")
@@ -125,13 +126,13 @@ class CameraManager:
                 self.cap.release()
             self.cap = None
             return False
-        
+
         print("[CameraManager] Camera opened successfully")
-        
-        # Set resolution for webcam
+
+        # Set lower resolution for webcam (faster capture + processing)
         if source_type == "webcam":
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
         
         self.running = True
         self.frames_captured = 0
@@ -228,28 +229,28 @@ class CameraManager:
         print("[CameraManager] Capture loop started")
         last_frame_time = 0.0
         consecutive_failures = 0
-        
+
         while self.running:
             # Check if camera still exists
             cap = self.cap
             if not cap:
                 print("[CameraManager] Camera released, exiting loop")
                 break
-            
+
             # Rate limiting
             now = time.time()
             elapsed = now - last_frame_time
             if elapsed < self.frame_interval:
-                time.sleep(0.01)
+                time.sleep(0.005)  # Shorter sleep for responsiveness
                 continue
-            
-            # Read frame (may fail if camera released)
+
+            # Read frame directly
             try:
                 ret, frame = cap.read()
             except Exception as e:
                 print(f"[CameraManager] Read exception: {e}")
                 break
-            
+
             if not ret or frame is None:
                 consecutive_failures += 1
                 if consecutive_failures > 30:
@@ -258,19 +259,23 @@ class CameraManager:
                     break
                 time.sleep(0.05)
                 continue
-            
+
             consecutive_failures = 0
-            
-            # Process frame based on mode
+            self.error = ""
+            self.frames_captured += 1
+
+            # Process frame based on mode (skip detection on most frames for perf)
+            run_detection = (self.frames_captured % self.detection_skip == 0)
+
             if self.mode == "driver":
                 if self.driver_detector is None:
                     self._ensure_driver_detector()
-                
-                if self.driver_detector is not None:
+
+                if self.driver_detector is not None and run_detection:
                     try:
                         frame, events = self.driver_detector.process_frame(frame)
                         self.driver_state = self.driver_detector.get_state_dict()
-                        
+
                         # Queue any driver events
                         if events:
                             with self.driver_events_lock:
@@ -286,25 +291,26 @@ class CameraManager:
                         print(f"[CameraManager] Driver detection error: {e}")
                         import traceback
                         traceback.print_exc()
-            
+                elif self.driver_detector is not None:
+                    frame = self.driver_detector.draw_live_overlay(frame)
+
             # Encode as JPEG
-            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 70]
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 50]
             ret, jpeg = cv2.imencode('.jpg', frame, encode_params)
-            
+
             if not ret:
                 continue
-            
+
             # Store latest frame
             with self.frame_lock:
                 self.latest_frame = jpeg.tobytes()
-            
-            self.frames_captured += 1
+
             last_frame_time = time.time()
-            
+
             # Log every 100 frames
             if self.frames_captured % 100 == 0:
                 print(f"[CameraManager] Captured {self.frames_captured} frames")
-        
+
         print("[CameraManager] Capture loop ended")
 
 

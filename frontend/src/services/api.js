@@ -1,8 +1,37 @@
 const API_BASE = "/api";
 
+async function readJsonResponse(res) {
+  const rawText = await res.text();
+  let data = null;
+
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      throw new Error(`Backend returned invalid JSON (${res.status})`);
+    }
+  }
+
+  if (!res.ok) {
+    const message =
+      data?.detail ||
+      data?.message ||
+      data?.error ||
+      rawText ||
+      `Request failed with status ${res.status}`;
+    throw new Error(message);
+  }
+
+  if (data === null) {
+    throw new Error("Backend returned an empty response");
+  }
+
+  return data;
+}
+
 export async function getStatus() {
   const res = await fetch(`${API_BASE}/status`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function switchMode(mode) {
@@ -11,13 +40,13 @@ export async function switchMode(mode) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode }),
   });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 // Camera endpoints
 export async function getCameraSources() {
   const res = await fetch(`${API_BASE}/camera/sources`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function startCamera(sourceType, sourceId = "") {
@@ -26,47 +55,47 @@ export async function startCamera(sourceType, sourceId = "") {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source_type: sourceType, source_id: sourceId }),
   });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function stopCamera() {
   const res = await fetch(`${API_BASE}/camera/stop`, { method: "POST" });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function getCameraState() {
   const res = await fetch(`${API_BASE}/camera/state`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function setCameraMode(mode) {
   const res = await fetch(`${API_BASE}/camera/mode/${mode}`, { method: "POST" });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function getAttendance() {
   const res = await fetch(`${API_BASE}/attendance`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function getEvents(category) {
   const res = await fetch(`${API_BASE}/events?category=${category}`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function getAlerts() {
   const res = await fetch(`${API_BASE}/alerts`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function acknowledgeAlert(id) {
   const res = await fetch(`${API_BASE}/alerts/${id}/ack`, { method: "POST" });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function getPersons() {
   const res = await fetch(`${API_BASE}/persons`);
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function enrollPerson(data) {
@@ -75,5 +104,5 @@ export async function enrollPerson(data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return res.json();
+  return readJsonResponse(res);
 }

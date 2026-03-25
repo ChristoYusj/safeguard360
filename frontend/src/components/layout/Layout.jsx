@@ -1,47 +1,293 @@
-import { Outlet, Link, useLocation } from "react-router-dom";
+/*
+ * SafeGuard 360 - Main Layout Component
+ * "Precision Command" Design System
+ */
+
+import { useEffect, useState } from "react";
+import { Link, Outlet, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { useThemePreference } from "../../hooks/useThemePreference";
+import {
+  SteeringWheelIcon,
+  AttendanceIcon,
+  LogsIcon,
+  ChatbotIcon,
+  SettingsIcon,
+  SunIcon,
+  MoonIcon,
+  ChevronLeftIcon,
+  ShieldIcon,
+} from "../icons";
+
+const SIDEBAR_STATE_KEY = "safeguard360-sidebar-open";
+const OPERATOR_EMAIL_KEY = "safeguard360-operator-email";
 
 const navItems = [
-  { path: "/", label: "Dashboard", icon: "📊" },
-  { path: "/attendance", label: "Attendance", icon: "👥" },
-  { path: "/ppe", label: "PPE Events", icon: "🦺" },
-  { path: "/driver", label: "Driver Events", icon: "🚗" },
-  { path: "/alerts", label: "Alerts", icon: "🔔" },
-  { path: "/enrollment", label: "Enrollment", icon: "📝" },
-  { path: "/settings", label: "Settings", icon: "⚙️" },
+  { path: "/drivers", label: "Fleet Monitoring", icon: SteeringWheelIcon },
+  { path: "/attendance", label: "Attendance & PPE", icon: AttendanceIcon },
+  { path: "/logs", label: "Logs", icon: LogsIcon },
+  { path: "/ai-chatbot", label: "AI Chatbot", icon: ChatbotIcon },
+  { path: "/settings", label: "Settings", icon: SettingsIcon },
 ];
+
+function getInitialSidebarState() {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(SIDEBAR_STATE_KEY) !== "false";
+}
+
+function getStoredOperatorEmail() {
+  if (typeof window === "undefined") return "operator@safeguard360.local";
+  return (
+    window.localStorage.getItem(OPERATOR_EMAIL_KEY) ||
+    "operator@safeguard360.local"
+  );
+}
+
+function formatHeaderTime() {
+  return new Date().toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 function Layout() {
   const location = useLocation();
+  const { darkMode, toggleDarkMode } = useThemePreference();
+  const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
+  const [operatorEmail, setOperatorEmail] = useState(getStoredOperatorEmail);
+  const [currentTime, setCurrentTime] = useState(formatHeaderTime);
+
+  // Update time every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(formatHeaderTime());
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      SIDEBAR_STATE_KEY,
+      sidebarOpen ? "true" : "false",
+    );
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    setOperatorEmail(getStoredOperatorEmail());
+  }, [location.pathname]);
 
   return (
-    <div className="flex h-screen">
+    <div className="flex min-h-screen bg-base">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-800 text-white">
-        <div className="p-4 border-b border-gray-700">
-          <h1 className="text-xl font-bold">SafeGuard 360</h1>
+      <motion.aside
+        initial={false}
+        animate={{ width: sidebarOpen ? 280 : 80 }}
+        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+        className="fixed left-0 top-0 z-[300] flex h-screen flex-col border-r border-default bg-elevated"
+      >
+        {/* Logo area */}
+        <div className="flex h-20 items-center border-b border-default px-4">
+          <Link
+            to="/"
+            className="flex items-center gap-3 rounded-xl p-2 transition hover:bg-[var(--color-active-bg)]"
+          >
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-accent-primary)] shadow-[var(--glow-accent)]">
+              <ShieldIcon
+                size={22}
+                className="text-[var(--color-text-inverse)]"
+              />
+            </div>
+            <AnimatePresence mode="wait">
+              {sidebarOpen && (
+                <motion.div
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -10 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <p className="eyebrow text-[10px]">SafeGuard 360</p>
+                  <h1 className="font-display text-sm font-semibold text-primary">
+                    Command Center
+                  </h1>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </Link>
         </div>
-        <nav className="p-4">
-          {navItems.map((item) => (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`flex items-center gap-3 px-4 py-2 rounded mb-1 ${
-                location.pathname === item.path
-                  ? "bg-blue-600"
-                  : "hover:bg-gray-700"
-              }`}
-            >
-              <span>{item.icon}</span>
-              <span>{item.label}</span>
-            </Link>
-          ))}
-        </nav>
-      </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto p-3">
+          <ul className="space-y-1">
+            {navItems.map((item, index) => {
+              const isActive =
+                location.pathname === item.path ||
+                location.pathname.startsWith(`${item.path}/`);
+              const IconComponent = item.icon;
+
+              return (
+                <motion.li
+                  key={item.path}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.05 + 0.1, duration: 0.3 }}
+                >
+                  <Link
+                    to={item.path}
+                    title={sidebarOpen ? undefined : item.label}
+                    className={`group flex items-center gap-3 rounded-xl px-3 py-3 transition-all duration-200 ${
+                      isActive
+                        ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)] shadow-[var(--glow-accent)]"
+                        : "text-secondary hover:bg-[var(--color-active-bg)] hover:text-primary"
+                    }`}
+                  >
+                    <div
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition ${
+                        isActive
+                          ? "bg-white/20"
+                          : "bg-[var(--color-bg-surface)] group-hover:bg-[var(--color-bg-card)]"
+                      }`}
+                    >
+                      <IconComponent size={18} />
+                    </div>
+                    <AnimatePresence mode="wait">
+                      {sidebarOpen && (
+                        <motion.span
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -8 }}
+                          transition={{ duration: 0.15 }}
+                          className="text-sm font-medium whitespace-nowrap"
+                        >
+                          {item.label}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                  </Link>
+                </motion.li>
+              );
+            })}
+          </ul>
+        </nav>
+
+        {/* Sidebar toggle */}
+        <div className="border-t border-default p-3">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen((prev) => !prev)}
+            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-bg-surface)] text-tertiary transition hover:bg-[var(--color-bg-card)] hover:text-primary"
+          >
+            <motion.div
+              animate={{ rotate: sidebarOpen ? 0 : 180 }}
+              transition={{ duration: 0.2 }}
+            >
+              <ChevronLeftIcon size={18} />
+            </motion.div>
+            <AnimatePresence mode="wait">
+              {sidebarOpen && (
+                <motion.span
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-sm font-medium"
+                >
+                  Collapse
+                </motion.span>
+              )}
+            </AnimatePresence>
+          </button>
+        </div>
+      </motion.aside>
+
+      {/* Main content area */}
+      <motion.div
+        initial={false}
+        animate={{ marginLeft: sidebarOpen ? 280 : 80 }}
+        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+        className="min-w-0 flex-1"
+      >
+        {/* Header */}
+        <header className="sticky top-0 z-[200] border-b border-default glass">
+          <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 xl:px-8">
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+            >
+              <p className="eyebrow text-[10px]">Signed in as</p>
+              <p className="font-display text-lg font-semibold text-primary mt-0.5">
+                {operatorEmail}
+              </p>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="flex flex-wrap items-center gap-4"
+            >
+              {/* Theme toggle */}
+              <div className="flex items-center gap-2">
+                <SunIcon size={16} className="text-muted" />
+                <button
+                  type="button"
+                  onClick={toggleDarkMode}
+                  role="switch"
+                  aria-checked={darkMode}
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full border transition-colors ${
+                    darkMode
+                      ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]"
+                      : "border-[var(--color-border-emphasis)] bg-[var(--color-bg-surface)]"
+                  }`}
+                >
+                  <motion.span
+                    initial={false}
+                    animate={{ x: darkMode ? 22 : 2 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                    className="inline-block h-5 w-5 rounded-full bg-white shadow-md"
+                  />
+                </button>
+                <MoonIcon size={16} className="text-muted" />
+              </div>
+
+              {/* System status */}
+              <div className="flex items-center gap-2 rounded-full border border-default bg-card px-4 py-2">
+                <span className="status-dot status-dot-online pulse" />
+                <span className="text-sm font-medium text-primary">
+                  System Online
+                </span>
+              </div>
+
+              {/* Time */}
+              <div className="rounded-full border border-default bg-card px-4 py-2">
+                <span className="text-sm font-medium text-secondary">
+                  {currentTime}
+                </span>
+              </div>
+            </motion.div>
+          </div>
+        </header>
+
+        {/* Page content with route transitions */}
+        <main className="min-h-[calc(100vh-73px)]">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={location.pathname}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+            >
+              <Outlet />
+            </motion.div>
+          </AnimatePresence>
+        </main>
+      </motion.div>
     </div>
   );
 }
