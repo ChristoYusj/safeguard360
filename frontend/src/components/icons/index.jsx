@@ -224,7 +224,25 @@ export function ExternalLinkIcon(props) {
 export function ShieldIcon(props) {
   return (
     <Icon {...props}>
-      <path d="M12 3s-5 2-8 2v7c0 5 5 8 8 9 3-1 8-4 8-9V5c-3 0-8-2-8-2Z" />
+      {/* Outer shield outline - heraldic shape */}
+      <path
+        d="M12 2.5C12 2.5 7 3.8 4 4.2V10.5C4 16.2 8.5 19.8 12 21.5C15.5 19.8 20 16.2 20 10.5V4.2C17 3.8 12 2.5 12 2.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {/* Inner detail stroke for depth */}
+      <path
+        d="M12 4.8C12 4.8 8.2 5.8 6 6.1V10.8C6 15.2 9.5 17.9 12 19.2C14.5 17.9 18 15.2 18 10.8V6.1C15.8 5.8 12 4.8 12 4.8Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="0.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.5"
+      />
     </Icon>
   );
 }

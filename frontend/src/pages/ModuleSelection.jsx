@@ -9,7 +9,6 @@ import { useThemePreference } from "../hooks/useThemePreference";
 import {
   DriversIcon,
   AttendanceIcon,
-  InzoneIcon,
   LogsIcon,
   ChatbotIcon,
   SettingsIcon,
@@ -35,14 +34,6 @@ const modules = [
     route: "/attendance",
     Icon: AttendanceIcon,
     accent: "var(--color-accent-secondary)",
-  },
-  {
-    id: "inzone",
-    name: "Inzone Infractions",
-    description: "Monitor geofence violations and zone compliance",
-    route: "/inzone-infractions",
-    Icon: InzoneIcon,
-    accent: "var(--color-warning)",
   },
   {
     id: "logs",

@@ -20,11 +20,11 @@
   --color-bg-surface: #1e2633;
   --color-bg-overlay: rgba(11, 15, 20, 0.92);
 
-  /* Primary accent - amber/gold authority */
-  --color-accent-primary: #d4a853;
-  --color-accent-primary-hover: #e4b863;
-  --color-accent-primary-muted: rgba(212, 168, 83, 0.15);
-  --color-accent-primary-glow: rgba(212, 168, 83, 0.25);
+  /* Primary accent - premium electric teal */
+  --color-accent-primary: #00bcd4;
+  --color-accent-primary-hover: #00acc1;
+  --color-accent-primary-muted: rgba(0, 188, 212, 0.15);
+  --color-accent-primary-glow: rgba(0, 188, 212, 0.25);
 
   /* Secondary accent - cool teal for positive states */
   --color-accent-secondary: #2dd4bf;
@@ -52,11 +52,11 @@
   --color-border-subtle: rgba(168, 162, 158, 0.08);
   --color-border-default: rgba(168, 162, 158, 0.12);
   --color-border-emphasis: rgba(168, 162, 158, 0.2);
-  --color-border-accent: rgba(212, 168, 83, 0.4);
+  --color-border-accent: rgba(0, 188, 212, 0.4);
 
   /* Interactive states */
-  --color-focus-ring: rgba(212, 168, 83, 0.5);
-  --color-active-bg: rgba(212, 168, 83, 0.08);
+  --color-focus-ring: rgba(0, 188, 212, 0.5);
+  --color-active-bg: rgba(0, 188, 212, 0.08);
 
   /* ═══════════════════════════════════════════════════════════════
      TYPOGRAPHY
@@ -139,8 +139,8 @@
   --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.6);
 
   /* Glow effects */
-  --glow-accent: 0 0 20px rgba(212, 168, 83, 0.3);
-  --glow-accent-strong: 0 0 40px rgba(212, 168, 83, 0.4);
+  --glow-accent: 0 0 20px rgba(0, 188, 212, 0.3);
+  --glow-accent-strong: 0 0 40px rgba(0, 188, 212, 0.4);
   --glow-success: 0 0 20px rgba(52, 211, 153, 0.3);
   --glow-error: 0 0 20px rgba(239, 68, 68, 0.3);
 
@@ -148,7 +148,7 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-card-hover:
     0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.45),
-    0 0 0 1px rgba(212, 168, 83, 0.1);
+    0 0 0 1px rgba(0, 188, 212, 0.1);
 
   /* ═══════════════════════════════════════════════════════════════
      TRANSITIONS & ANIMATIONS
@@ -191,11 +191,11 @@
   --color-bg-surface: #f5f3ef;
   --color-bg-overlay: rgba(250, 249, 247, 0.95);
 
-  /* Primary accent - deeper amber for light mode */
-  --color-accent-primary: #b8860b;
-  --color-accent-primary-hover: #996f0a;
-  --color-accent-primary-muted: rgba(184, 134, 11, 0.1);
-  --color-accent-primary-glow: rgba(184, 134, 11, 0.15);
+  /* Primary accent - deeper teal for light mode */
+  --color-accent-primary: #0097a7;
+  --color-accent-primary-hover: #00838f;
+  --color-accent-primary-muted: rgba(0, 151, 167, 0.1);
+  --color-accent-primary-glow: rgba(0, 151, 167, 0.15);
 
   /* Secondary accent */
   --color-accent-secondary: #0d9488;
@@ -223,7 +223,7 @@
   --color-border-subtle: rgba(28, 25, 23, 0.05);
   --color-border-default: rgba(28, 25, 23, 0.1);
   --color-border-emphasis: rgba(28, 25, 23, 0.15);
-  --color-border-accent: rgba(184, 134, 11, 0.3);
+  --color-border-accent: rgba(0, 151, 167, 0.3);
 
   /* Shadows - softer for light mode */
   --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.06);
@@ -235,8 +235,8 @@
     0 1px 3px rgba(28, 25, 23, 0.06), 0 8px 24px rgba(28, 25, 23, 0.08);
   --shadow-card-hover:
     0 1px 3px rgba(28, 25, 23, 0.06), 0 16px 40px rgba(28, 25, 23, 0.12),
-    0 0 0 1px rgba(184, 134, 11, 0.15);
+    0 0 0 1px rgba(0, 151, 167, 0.15);
 
-  --glow-accent: 0 0 20px rgba(184, 134, 11, 0.15);
-  --glow-accent-strong: 0 0 40px rgba(184, 134, 11, 0.2);
+  --glow-accent: 0 0 20px rgba(0, 151, 167, 0.15);
+  --glow-accent-strong: 0 0 40px rgba(0, 151, 167, 0.2);
 }

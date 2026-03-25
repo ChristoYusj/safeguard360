@@ -3,27 +3,9 @@
  * "Precision Command" Design System
  */
 
-import { motion } from "framer-motion";
-
 function Attendance() {
   return (
     <div className="min-h-screen p-6 xl:p-8">
-      {/* Header */}
-      <motion.section
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-8"
-      >
-        <p className="eyebrow mb-2">Workforce Entry Control</p>
-        <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
-          Attendance & PPE Check-In
-        </h1>
-        <p className="mt-3 max-w-3xl text-base text-secondary">
-          Monitor check-ins, validate workforce identity, and verify PPE
-          compliance at the same gate decision point.
-        </p>
-      </motion.section>
-
       {/* Page content area - placeholder for future implementation */}
     </div>
   );

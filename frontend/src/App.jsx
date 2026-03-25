@@ -21,10 +21,6 @@ function App() {
           <Route path="logs" element={<Logs />} />
           <Route path="ai-chatbot" element={<AIChatbot />} />
           <Route path="ppe" element={<Navigate to="/attendance" replace />} />
-          <Route
-            path="inzone-infractions"
-            element={<Navigate to="/attendance" replace />}
-          />
           <Route path="driver" element={<Navigate to="/drivers" replace />} />
           <Route path="alerts" element={<Navigate to="/logs" replace />} />
           <Route
