@@ -22,6 +22,7 @@ yarn-error.log*
 .env
 .env.local
 *.local
+bridge/.env
 
 # IDE
 .idea/
@@ -54,3 +55,7 @@ htmlcov/
 # Build
 frontend/dist/
 *.log
+bridge/logs/*
+!bridge/logs/.gitkeep
+bridge/state/*
+!bridge/state/.gitkeep

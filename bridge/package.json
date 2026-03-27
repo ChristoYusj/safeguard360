@@ -1,0 +1,21 @@
+{
+  "name": "safeguard360-telegram-codex-bridge",
+  "version": "1.0.0",
+  "description": "Telegram-to-Codex bridge for the safeguard360 workspace",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "doctor": "node src/doctor.mjs",
+    "show-updates": "node src/show-updates.mjs"
+  },
+  "keywords": [],
+  "author": "Codex",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@openai/codex-sdk": "^0.117.0",
+    "dotenv": "^17.3.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "zod": "^4.3.6"
+  }
+}
