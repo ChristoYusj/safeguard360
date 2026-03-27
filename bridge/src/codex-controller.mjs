@@ -1,5 +1,4 @@
 import { Codex } from "@openai/codex-sdk";
-import path from "node:path";
 import { discoverLatestMatchingThread } from "./session-discovery.mjs";
 
 function summarizeError(error) {
@@ -20,7 +19,6 @@ export class CodexController {
     this.logger = logger;
     this.stateStore = stateStore;
     this.codex = new Codex({
-      codexPathOverride: path.join(this.config.bridgeRoot, "node_modules", ".bin", "codex.cmd"),
       env: process.env,
       config: {
         approval_policy: this.config.codex.approvalPolicy,
