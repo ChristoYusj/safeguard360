@@ -32,3 +32,12 @@ export async function sendLongMessage(bot, chatId, text) {
     await bot.sendMessage(chatId, chunk);
   }
 }
+
+export function truncateForTelegramStatus(input, limit = 3500) {
+  const text = `${input || ""}`.trim();
+  if (text.length <= limit) {
+    return text;
+  }
+
+  return `${text.slice(0, limit - 3).trimEnd()}...`;
+}

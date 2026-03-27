@@ -9,7 +9,9 @@ This bridge lets a Telegram bot send prompts into a Codex thread that runs again
 - Stores the attached thread ID and latest result in `bridge/state/bridge-state.json`
 - Scans `C:\Users\chris\.codex\sessions` to attach to the latest matching local Codex thread for this workspace
 - Runs Codex with `approvalPolicy = "never"` and `sandboxMode = "workspace-write"`
-- Supports `/attach`, `/codex`, `/status`, `/last`, and `/stop`
+- Supports `/attach`, `/codex`, `/status`, `/last`, `/stop`, `/sessions`, `/projects`, and `/project`
+- Streams useful progress into Telegram while Codex is working
+- Lets you pin an active project inside the workspace for cleaner remote operation
 
 ## Setup
 
@@ -43,6 +45,8 @@ npm run show-updates
   Attaches the bridge to the latest matching local Codex thread for `New project`
 - `/attach <thread-id>`
   Attaches to a specific Codex thread ID
+- `/attach <session-number>`
+  Attaches to a session number shown by `/sessions`
 - `/codex <prompt>`
   Queues a prompt into the attached thread, or into a new thread if nothing is attached yet
 - `/status`
@@ -51,19 +55,29 @@ npm run show-updates
   Shows the last saved Codex reply
 - `/stop`
   Aborts the active run and clears the queue
+- `/sessions`
+  Lists recent matching Codex sessions for the current workspace or active project
+- `/projects`
+  Lists top-level projects inside `New project`
+- `/project <name>`
+  Pins the bridge to one project so `/attach` and new threads prefer that folder
+- `/project off`
+  Clears the active project pin and returns to workspace-root mode
 
 ## Optional Windows startup
 
 Install a logon task:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\chris\Documents\New project\safeguard360\bridge\scripts\install-startup.ps1
+cd C:\Users\chris\Documents\New project\safeguard360\bridge
+npm run install-startup
 ```
 
 Remove it:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\chris\Documents\New project\safeguard360\bridge\scripts\uninstall-startup.ps1
+cd C:\Users\chris\Documents\New project\safeguard360\bridge
+npm run uninstall-startup
 ```
 
 ## Notes

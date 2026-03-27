@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/index.mjs",
     "doctor": "node src/doctor.mjs",
-    "show-updates": "node src/show-updates.mjs"
+    "show-updates": "node src/show-updates.mjs",
+    "install-startup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\install-startup.ps1",
+    "uninstall-startup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\uninstall-startup.ps1"
   },
   "keywords": [],
   "author": "Codex",

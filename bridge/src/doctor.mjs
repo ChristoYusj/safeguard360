@@ -3,7 +3,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, validateConfig } from "./config.mjs";
-import { discoverLatestMatchingThread } from "./session-discovery.mjs";
+import { discoverLatestMatchingThread, listMatchingThreads } from "./session-discovery.mjs";
+import { listWorkspaceProjects } from "./workspace-projects.mjs";
 
 const execFileAsync = promisify(execFile);
 const config = loadConfig();
@@ -51,6 +52,17 @@ async function main() {
   } else {
     console.log("Latest matching thread: none found");
   }
+
+  const sessions = await listMatchingThreads({
+    sessionRoot: config.sessionDiscoveryRoot,
+    projectRoot: config.workingDirectory,
+    hints: config.discoveryHints,
+    limit: 3,
+  });
+  console.log(`Recent matching sessions: ${sessions.length}`);
+
+  const projects = await listWorkspaceProjects(config.workingDirectory);
+  console.log(`Workspace projects found: ${projects.map((project) => project.name).join(", ") || "(none)"}`);
 
   const problems = validateConfig(config);
   if (problems.length > 0) {

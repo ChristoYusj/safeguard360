@@ -45,6 +45,35 @@ async function collectSessionFiles(root) {
   return files;
 }
 
+async function loadThreadIndex(sessionRoot) {
+  const indexPath = path.resolve(sessionRoot, "..", "session_index.jsonl");
+  const map = new Map();
+
+  try {
+    const raw = await fs.readFile(indexPath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.id) {
+          map.set(parsed.id, parsed);
+        }
+      } catch {
+        // Ignore malformed index lines.
+      }
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return map;
+}
+
 function parseThreadId(sessionFile) {
   const match = path.basename(sessionFile).match(/-([0-9a-f-]{36})\.jsonl$/i);
   return match ? match[1] : null;
@@ -72,24 +101,65 @@ async function extractCwd(sessionFile) {
   return null;
 }
 
-export async function discoverLatestMatchingThread({ sessionRoot, projectRoot, hints = [] }) {
+async function buildSessionRecord(file, indexMap) {
+  const threadId = parseThreadId(file.fullPath);
+  if (!threadId) {
+    return null;
+  }
+
+  const cwd = await extractCwd(file.fullPath);
+  if (!cwd) {
+    return null;
+  }
+
+  const indexEntry = indexMap.get(threadId);
+  return {
+    threadId,
+    threadName: indexEntry?.thread_name || null,
+    sessionFile: file.fullPath,
+    cwd,
+    updatedAt: new Date(file.mtimeMs).toISOString(),
+  };
+}
+
+export async function listMatchingThreads({ sessionRoot, projectRoot, hints = [], limit = 8 }) {
   const targets = [projectRoot, ...hints].filter(Boolean);
   const files = await collectSessionFiles(sessionRoot);
+  const indexMap = await loadThreadIndex(sessionRoot);
+  const matches = [];
 
   for (const file of files) {
-    const cwd = await extractCwd(file.fullPath);
-    if (!cwd) {
+    const record = await buildSessionRecord(file, indexMap);
+    if (!record) {
       continue;
     }
 
-    if (targets.some((target) => pathsOverlap(target, cwd))) {
-      return {
-        threadId: parseThreadId(file.fullPath),
-        sessionFile: file.fullPath,
-        cwd,
-        updatedAt: new Date(file.mtimeMs).toISOString(),
-      };
+    if (targets.length === 0 || targets.some((target) => pathsOverlap(target, record.cwd))) {
+      matches.push(record);
+      if (matches.length >= limit) {
+        break;
+      }
     }
+  }
+
+  return matches;
+}
+
+export async function discoverLatestMatchingThread({ sessionRoot, projectRoot, hints = [] }) {
+  const matches = await listMatchingThreads({ sessionRoot, projectRoot, hints, limit: 1 });
+  return matches[0] || null;
+}
+
+export async function findThreadById({ sessionRoot, threadId }) {
+  const files = await collectSessionFiles(sessionRoot);
+  const indexMap = await loadThreadIndex(sessionRoot);
+
+  for (const file of files) {
+    if (parseThreadId(file.fullPath) !== threadId) {
+      continue;
+    }
+
+    return buildSessionRecord(file, indexMap);
   }
 
   return null;
