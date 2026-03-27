@@ -1,13 +1,13 @@
-# SafeGuard360 Telegram Codex Bridge
+# New Project Telegram Codex Bridge
 
-This bridge lets a Telegram bot send prompts into a Codex thread that runs against the `safeguard360` workspace on this Windows machine.
+This bridge lets a Telegram bot send prompts into a Codex thread that runs against the `C:\Users\chris\Documents\New project` workspace on this Windows machine.
 
 ## What it does
 
 - Uses the official `@openai/codex-sdk`
 - Restricts control to one Telegram user ID
 - Stores the attached thread ID and latest result in `bridge/state/bridge-state.json`
-- Scans `C:\Users\chris\.codex\sessions` to attach to the latest matching local Codex thread for this project
+- Scans `C:\Users\chris\.codex\sessions` to attach to the latest matching local Codex thread for this workspace
 - Runs Codex with `approvalPolicy = "never"` and `sandboxMode = "workspace-write"`
 - Supports `/attach`, `/codex`, `/status`, `/last`, and `/stop`
 
@@ -40,7 +40,7 @@ npm run show-updates
 ## Daily use
 
 - `/attach`
-  Attaches the bridge to the latest matching local Codex thread
+  Attaches the bridge to the latest matching local Codex thread for `New project`
 - `/attach <thread-id>`
   Attaches to a specific Codex thread ID
 - `/codex <prompt>`
@@ -71,3 +71,4 @@ powershell -ExecutionPolicy Bypass -File C:\Users\chris\Documents\New project\sa
 - The bridge uses the Codex SDK, not raw shell commands from Telegram
 - The safest exact same-thread behavior is `resumeThread(threadId)` against the local Codex session store
 - If both the desktop app and the bridge try to drive the same thread at the same time, results may be less predictable than serialized use
+- The bridge now targets the whole `C:\Users\chris\Documents\New project` workspace, so it can work across `safeguard360`, `digigowebsite`, and other folders inside that root
