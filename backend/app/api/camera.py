@@ -1,7 +1,7 @@
 """
 Camera API Endpoints
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import cv2
@@ -14,6 +14,13 @@ router = APIRouter()
 class CameraStartRequest(BaseModel):
     source_type: str = "webcam"
     source_id: Optional[str] = "0"
+    owner_module: Optional[str] = None
+    owner_token: Optional[str] = None
+
+
+class CameraControlRequest(BaseModel):
+    owner_module: Optional[str] = None
+    owner_token: Optional[str] = None
 
 
 class CameraStateResponse(BaseModel):
@@ -24,12 +31,26 @@ class CameraStateResponse(BaseModel):
     frames_captured: int
     mode: str
     error: str = ""
+    owner_module: Optional[str] = None
+    state_version: int = 0
+    gate: Optional[dict] = None
+    driver: Optional[dict] = None
 
 
 class CameraSourceInfo(BaseModel):
     source_type: str
     source_id: str
     name: str
+
+
+def _build_camera_response():
+    state = camera_manager.get_state()
+    payload = state.__dict__.copy()
+    if state.mode == "gate":
+        payload["gate"] = camera_manager.get_gate_state()
+    elif state.mode == "driver":
+        payload["driver"] = camera_manager.get_driver_state()
+    return CameraStateResponse(**payload)
 
 
 @router.get("/sources", response_model=List[CameraSourceInfo])
@@ -94,7 +115,9 @@ async def start_camera(request: CameraStartRequest):
     
     success = camera_manager.start(
         source_type=request.source_type,
-        source_id=request.source_id or "0"
+        source_id=request.source_id or "0",
+        owner_module=request.owner_module,
+        owner_token=request.owner_token,
     )
     
     if not success:
@@ -105,29 +128,38 @@ async def start_camera(request: CameraStartRequest):
             detail=f"Failed to start camera: {state.error}"
         )
     
-    state = camera_manager.get_state()
     print(f"[API] Camera started successfully")
-    return CameraStateResponse(**state.__dict__)
+    return _build_camera_response()
 
 
 @router.post("/stop", response_model=CameraStateResponse)
-async def stop_camera():
+async def stop_camera(request: Optional[CameraControlRequest] = Body(default=None)):
     """Stop camera capture."""
     print("[API] POST /camera/stop")
+    control_request = request or CameraControlRequest()
+    if camera_manager.running and not camera_manager.has_control(
+        control_request.owner_module,
+        control_request.owner_token,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Camera is currently controlled by {camera_manager.get_owner_label()}.",
+        )
     camera_manager.stop()
-    state = camera_manager.get_state()
-    return CameraStateResponse(**state.__dict__)
+    return _build_camera_response()
 
 
 @router.get("/state", response_model=CameraStateResponse)
 async def get_camera_state():
     """Get current camera state."""
-    state = camera_manager.get_state()
-    return CameraStateResponse(**state.__dict__)
+    return _build_camera_response()
 
 
 @router.post("/mode/{mode}", response_model=CameraStateResponse)
-async def set_camera_mode(mode: str):
+async def set_camera_mode(
+    mode: str,
+    request: Optional[CameraControlRequest] = Body(default=None),
+):
     """Set processing mode (gate/driver/idle)."""
     print(f"[API] POST /camera/mode/{mode}")
     if mode not in ["gate", "driver", "idle"]:
@@ -135,7 +167,22 @@ async def set_camera_mode(mode: str):
             status_code=400,
             detail=f"Invalid mode: {mode}. Must be gate, driver, or idle."
         )
+
+    if mode != "idle" and not camera_manager.running:
+        raise HTTPException(
+            status_code=409,
+            detail="Start the camera feed before enabling recognition mode.",
+        )
+
+    control_request = request or CameraControlRequest()
+    if camera_manager.running and not camera_manager.has_control(
+        control_request.owner_module,
+        control_request.owner_token,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Camera is currently controlled by {camera_manager.get_owner_label()}.",
+        )
     
     camera_manager.set_mode(mode)
-    state = camera_manager.get_state()
-    return CameraStateResponse(**state.__dict__)
+    return _build_camera_response()

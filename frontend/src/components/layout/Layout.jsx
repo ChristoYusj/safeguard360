@@ -7,9 +7,11 @@ import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useThemePreference } from "../../hooks/useThemePreference";
+import { useAppLanguage } from "../../contexts/AppLanguageContext";
 import {
   SteeringWheelIcon,
   AttendanceIcon,
+  UsersIcon,
   LogsIcon,
   ChatbotIcon,
   SettingsIcon,
@@ -20,31 +22,14 @@ import {
 } from "../icons";
 
 const SIDEBAR_STATE_KEY = "safeguard360-sidebar-open";
-const OPERATOR_EMAIL_KEY = "safeguard360-operator-email";
-
-const navItems = [
-  { path: "/drivers", label: "Fleet Monitoring", icon: SteeringWheelIcon },
-  { path: "/attendance", label: "Attendance & PPE", icon: AttendanceIcon },
-  { path: "/logs", label: "Logs", icon: LogsIcon },
-  { path: "/ai-chatbot", label: "AI Chatbot", icon: ChatbotIcon },
-  { path: "/settings", label: "Settings", icon: SettingsIcon },
-];
 
 function getInitialSidebarState() {
   if (typeof window === "undefined") return true;
   return window.localStorage.getItem(SIDEBAR_STATE_KEY) !== "false";
 }
 
-function getStoredOperatorEmail() {
-  if (typeof window === "undefined") return "operator@safeguard360.local";
-  return (
-    window.localStorage.getItem(OPERATOR_EMAIL_KEY) ||
-    "operator@safeguard360.local"
-  );
-}
-
-function formatHeaderTime() {
-  return new Date().toLocaleString("en-US", {
+function formatHeaderTime(locale) {
+  return new Date().toLocaleString(locale, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -56,17 +41,29 @@ function formatHeaderTime() {
 function Layout() {
   const location = useLocation();
   const { darkMode, toggleDarkMode } = useThemePreference();
+  const { locale, t } = useAppLanguage();
+  const navItems = [
+    { path: "/drivers", label: t("fleet_monitoring"), icon: SteeringWheelIcon },
+    { path: "/attendance", label: t("attendance_ppe"), icon: AttendanceIcon },
+    { path: "/enrollment", label: "Enrollment", icon: UsersIcon },
+    { path: "/logs", label: t("logs"), icon: LogsIcon },
+    { path: "/ai-chatbot", label: t("ai_chatbot"), icon: ChatbotIcon },
+    { path: "/settings", label: t("settings"), icon: SettingsIcon },
+  ];
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
-  const [operatorEmail, setOperatorEmail] = useState(getStoredOperatorEmail);
-  const [currentTime, setCurrentTime] = useState(formatHeaderTime);
+  const [currentTime, setCurrentTime] = useState(() => formatHeaderTime(locale));
 
   // Update time every minute
   useEffect(() => {
     const interval = setInterval(() => {
-      setCurrentTime(formatHeaderTime());
+      setCurrentTime(formatHeaderTime(locale));
     }, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [locale]);
+
+  useEffect(() => {
+    setCurrentTime(formatHeaderTime(locale));
+  }, [locale]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -75,10 +72,6 @@ function Layout() {
       sidebarOpen ? "true" : "false",
     );
   }, [sidebarOpen]);
-
-  useEffect(() => {
-    setOperatorEmail(getStoredOperatorEmail());
-  }, [location.pathname]);
 
   return (
     <div className="flex min-h-screen bg-base">
@@ -95,11 +88,8 @@ function Layout() {
             to="/"
             className="flex items-center gap-3 rounded-xl p-2 transition hover:bg-[var(--color-active-bg)]"
           >
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-accent-primary)] shadow-[var(--glow-accent)]">
-              <ShieldIcon
-                size={22}
-                className="text-[var(--color-text-inverse)]"
-              />
+            <div className="flex h-10 w-10 items-center justify-center">
+              <ShieldIcon size={30} />
             </div>
             <AnimatePresence mode="wait">
               {sidebarOpen && (
@@ -110,9 +100,9 @@ function Layout() {
                   transition={{ duration: 0.2 }}
                   className="overflow-hidden"
                 >
-                  <p className="eyebrow text-[10px]">SafeGuard 360</p>
+                  <p className="eyebrow text-[10px]">{t("app_name")}</p>
                   <h1 className="font-display text-sm font-semibold text-primary">
-                    Command Center
+                    {t("command_center")}
                   </h1>
                 </motion.div>
               )}
@@ -141,9 +131,17 @@ function Layout() {
                     title={sidebarOpen ? undefined : item.label}
                     className={`group flex items-center gap-3 rounded-xl px-3 py-3 transition-all duration-200 ${
                       isActive
-                        ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)] shadow-[var(--glow-accent)]"
+                        ? "text-[var(--color-text-inverse)]"
                         : "text-secondary hover:bg-[var(--color-active-bg)] hover:text-primary"
                     }`}
+                    style={
+                      isActive
+                        ? {
+                            backgroundColor: "var(--color-info)",
+                            boxShadow: "0 0 22px rgba(96, 165, 250, 0.32)",
+                          }
+                        : undefined
+                    }
                   >
                     <div
                       className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition ${
@@ -196,7 +194,7 @@ function Layout() {
                   exit={{ opacity: 0 }}
                   className="text-sm font-medium"
                 >
-                  Collapse
+                  {t("collapse")}
                 </motion.span>
               )}
             </AnimatePresence>
@@ -219,9 +217,9 @@ function Layout() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
             >
-              <p className="eyebrow text-[10px]">Signed in as</p>
+              <p className="eyebrow text-[10px]">{t("session")}</p>
               <p className="font-display text-lg font-semibold text-primary mt-0.5">
-                {operatorEmail}
+                {t("authorized_operator")}
               </p>
             </motion.div>
 
@@ -259,7 +257,7 @@ function Layout() {
               <div className="flex items-center gap-2 rounded-full border border-default bg-card px-4 py-2">
                 <span className="status-dot status-dot-online pulse" />
                 <span className="text-sm font-medium text-primary">
-                  System Online
+                  {t("system_online")}
                 </span>
               </div>
 

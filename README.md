@@ -9,6 +9,12 @@ Local-first industrial safety monitoring system for Windows.
 - **Driver Monitoring** — Fatigue, distraction, seatbelt detection
 - **Web Dashboard** — Real-time status, alerts, event logs
 
+## Current Build Notes
+
+- Replace UI-only placeholder attendance profiles with a real test database of 2-3 workers for face-recognition attendance checks.
+- Add a real PPE recognition/reference database so compliance decisions come from stored records instead of mocked frontend data.
+- Keep manual override logging in scope so forced gate releases record worker, time, camera, and trigger details.
+
 ## Tech Stack
 
 | Layer     | Technology                 |

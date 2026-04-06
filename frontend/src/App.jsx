@@ -7,6 +7,7 @@ import Attendance from "./pages/Attendance";
 import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
 import AIChatbot from "./pages/AIChatbot";
+import Enrollment from "./pages/Enrollment";
 
 function App() {
   return (
@@ -20,13 +21,10 @@ function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="logs" element={<Logs />} />
           <Route path="ai-chatbot" element={<AIChatbot />} />
+          <Route path="enrollment" element={<Enrollment />} />
           <Route path="ppe" element={<Navigate to="/attendance" replace />} />
           <Route path="driver" element={<Navigate to="/drivers" replace />} />
           <Route path="alerts" element={<Navigate to="/logs" replace />} />
-          <Route
-            path="enrollment"
-            element={<Navigate to="/attendance" replace />}
-          />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

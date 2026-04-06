@@ -3,10 +3,12 @@
  * "Precision Command" Design System
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useThemePreference } from "../hooks/useThemePreference";
+import { useAppLanguage } from "../contexts/AppLanguageContext";
 import {
+  getCameraOwner,
   getCameraSources,
   getCameraState,
   setCameraMode,
@@ -18,6 +20,11 @@ import {
   beginFleetSession,
   endFleetSession,
 } from "../utils/platformLogs";
+import { readAppSettings } from "../utils/appSettings";
+import {
+  readTestDatabase,
+  TEST_DATABASE_UPDATED_EVENT,
+} from "../utils/testDatabase";
 import {
   VideoIcon,
   AlertTriangleIcon,
@@ -55,51 +62,26 @@ const DESTINATIONS = {
   },
 };
 
-const DRIVERS = [
-  {
-    id: "drv-christopher",
-    fullName: "Christopher Yazigi",
-    stateId: "LB-3914-7726",
-    role: "Senior Transport Operator",
-    licenseClass: "C1E",
-    assignedRoute: "BRT-12 - Beirut North",
-    shift: "Day Shift (06:00 - 14:00)",
-    portrait:
-      "https://media.formula1.com/content/dam/fom-website/drivers/2024Drivers/verstappen.png.img.512.medium.png",
-    truckId: "TRK-4712",
-    destination: DESTINATIONS.beirut,
-  },
-  {
-    id: "drv-rami",
-    fullName: "Rami Nassar",
-    stateId: "LB-5521-1840",
-    role: "Regional Fleet Operator",
-    licenseClass: "C1E",
-    assignedRoute: "NTH-04 - Tripoli Cargo Link",
-    shift: "Mid Shift (10:00 - 18:00)",
-    portrait:
-      "https://media.formula1.com/content/dam/fom-website/drivers/2024Drivers/leclerc.png.img.512.medium.png",
-    truckId: "TRK-5824",
-    destination: DESTINATIONS.tripoli,
-  },
-  {
-    id: "drv-karim",
-    fullName: "Karim Haddad",
-    stateId: "LB-8802-4419",
-    role: "Urban Safety Driver",
-    licenseClass: "C1E",
-    assignedRoute: "ACH-09 - Ashrafieh Core",
-    shift: "Late Shift (14:00 - 22:00)",
-    portrait:
-      "https://media.formula1.com/content/dam/fom-website/drivers/2025Drivers/hamilton.png.img.512.medium.png",
-    truckId: "TRK-6031",
-    destination: DESTINATIONS.achrafieh,
-  },
-];
-
 // ══════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ══════════════════════════════════════════════════════════════
+
+function mapStoredDriverToFleetDriver(driver) {
+  const destination = DESTINATIONS[driver.destinationKey] || DESTINATIONS.beirut;
+
+  return {
+    id: driver.id,
+    fullName: driver.fullName || driver.name,
+    stateId: driver.stateId || "Pending ID",
+    role: driver.role || "Fleet Driver",
+    licenseClass: driver.licenseClass || "Pending",
+    assignedRoute: driver.assignedRoute || "Route pending",
+    shift: driver.shift || "Schedule pending",
+    portrait: driver.portrait || "",
+    truckId: driver.truckId || driver.vehicle || "Vehicle pending",
+    destination,
+  };
+}
 
 function haversineDistanceKm(lat1, lon1, lat2, lon2) {
   const toRad = (value) => (value * Math.PI) / 180;
@@ -303,18 +285,16 @@ function AlertCard({ event, locationState, selectedDriver }) {
 // ══════════════════════════════════════════════════════════════
 
 function Dashboard() {
-  const { darkMode } = useThemePreference();
+  useThemePreference();
+  const { t } = useAppLanguage();
+  const [database, setDatabase] = useState(readTestDatabase);
   const [cameraState, setCameraState] = useState(null);
-  const [selectedDriverId, setSelectedDriverId] = useState(DRIVERS[0].id);
-  const [driverEventsById, setDriverEventsById] = useState(() =>
-    Object.fromEntries(DRIVERS.map((driver) => [driver.id, []])),
+  const [selectedDriverId, setSelectedDriverId] = useState(
+    () => readTestDatabase().drivers[0]?.id || "",
   );
-  const [departureTimesById, setDepartureTimesById] = useState(() =>
-    Object.fromEntries(DRIVERS.map((driver) => [driver.id, null])),
-  );
-  const [sessionIdsById, setSessionIdsById] = useState(() =>
-    Object.fromEntries(DRIVERS.map((driver) => [driver.id, null])),
-  );
+  const [driverEventsById, setDriverEventsById] = useState({});
+  const [departureTimesById, setDepartureTimesById] = useState({});
+  const [sessionIdsById, setSessionIdsById] = useState({});
   const [locationState, setLocationState] = useState({
     status: "idle",
     latitude: null,
@@ -322,7 +302,9 @@ function Dashboard() {
     error: null,
   });
   const [sources, setSources] = useState([]);
-  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [selectedSourceId, setSelectedSourceId] = useState(
+    () => readAppSettings().fleetCamera || "webcam:0",
+  );
   const [frameData, setFrameData] = useState(null);
   const [error, setError] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
@@ -336,9 +318,15 @@ function Dashboard() {
   const lastEventKeyRef = useRef(null);
   const lastFrameTsRef = useRef(null);
   const smoothedFpsRef = useRef(0);
+  const cameraOwnerRef = useRef(getCameraOwner("drivers"));
+  const latestCameraStateVersionRef = useRef(-1);
   const selectedDriverIdRef = useRef(selectedDriverId);
   const sessionIdsByIdRef = useRef(sessionIdsById);
   const locationStateRef = useRef(locationState);
+  const drivers = useMemo(
+    () => database.drivers.map(mapStoredDriverToFleetDriver),
+    [database.drivers],
+  );
 
   const makeSourceId = (source) => `${source.source_type}:${source.source_id}`;
   const parseSourceId = (sourceId) => {
@@ -350,6 +338,16 @@ function Dashboard() {
     };
   };
 
+  const applyCameraState = (nextState) => {
+    const nextVersion = nextState?.state_version ?? 0;
+    if (nextVersion < latestCameraStateVersionRef.current) {
+      return false;
+    }
+    latestCameraStateVersionRef.current = nextVersion;
+    setCameraState(nextState);
+    return true;
+  };
+
   useEffect(() => {
     selectedDriverIdRef.current = selectedDriverId;
   }, [selectedDriverId]);
@@ -359,6 +357,48 @@ function Dashboard() {
   useEffect(() => {
     locationStateRef.current = locationState;
   }, [locationState]);
+
+  useEffect(() => {
+    const syncDatabase = () => setDatabase(readTestDatabase());
+    const handleStorage = () => syncDatabase();
+
+    window.addEventListener(TEST_DATABASE_UPDATED_EVENT, syncDatabase);
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.removeEventListener(TEST_DATABASE_UPDATED_EVENT, syncDatabase);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (drivers.length === 0) {
+      setSelectedDriverId("");
+      setDriverEventsById({});
+      setDepartureTimesById({});
+      setSessionIdsById({});
+      return;
+    }
+
+    setSelectedDriverId((current) =>
+      drivers.some((driver) => driver.id === current) ? current : drivers[0].id,
+    );
+    setDriverEventsById((current) =>
+      Object.fromEntries(
+        drivers.map((driver) => [driver.id, current[driver.id] || []]),
+      ),
+    );
+    setDepartureTimesById((current) =>
+      Object.fromEntries(
+        drivers.map((driver) => [driver.id, current[driver.id] || null]),
+      ),
+    );
+    setSessionIdsById((current) =>
+      Object.fromEntries(
+        drivers.map((driver) => [driver.id, current[driver.id] || null]),
+      ),
+    );
+  }, [drivers]);
 
   useEffect(() => {
     let isDisposed = false;
@@ -412,7 +452,7 @@ function Dashboard() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === "status" && msg.camera) setCameraState(msg.camera);
+          if (msg.type === "status" && msg.camera) applyCameraState(msg.camera);
           else if (msg.type === "driver_event") {
             const eventKey = `${msg.event_type}-${msg.timestamp}-${msg.details}`;
             if (lastEventKeyRef.current === eventKey) return;
@@ -463,7 +503,7 @@ function Dashboard() {
   useEffect(() => {
     getCameraState()
       .then((state) => {
-        setCameraState(state);
+        applyCameraState(state);
         if (state?.source_type && state?.source_type !== "none")
           setSelectedSourceId(`${state.source_type}:${state.source_id}`);
       })
@@ -476,11 +516,16 @@ function Dashboard() {
     getCameraSources()
       .then((data) => {
         setSources(data || []);
-        if (data && data.length > 0 && !selectedSourceId)
-          setSelectedSourceId(makeSourceId(data[0]));
+        if (data && data.length > 0) {
+          setSelectedSourceId((current) =>
+            data.some((source) => makeSourceId(source) === current)
+              ? current
+              : makeSourceId(data[0]),
+          );
+        }
       })
       .catch((e) => console.error("[Dashboard] Failed to load sources:", e));
-  }, [selectedSourceId]);
+  }, []);
 
   useEffect(() => {
     if (!cameraState?.active) {
@@ -523,15 +568,44 @@ function Dashboard() {
   }, [cameraState?.active]);
 
   const selectedDriver =
-    DRIVERS.find((d) => d.id === selectedDriverId) || DRIVERS[0];
+    drivers.find((driver) => driver.id === selectedDriverId) || drivers[0];
+
+  if (!selectedDriver) {
+    return (
+      <div className="min-h-screen p-6 xl:p-8">
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <p className="eyebrow mb-2">{t("command_center")}</p>
+          <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
+            {t("fleet_monitoring")}
+          </h1>
+        </motion.div>
+        <div className="rounded-2xl border border-dashed border-default bg-card px-6 py-12 text-center">
+          <p className="text-lg font-semibold text-primary">
+            No drivers are configured yet
+          </p>
+          <p className="mt-2 text-sm text-secondary">
+            Add drivers from settings and they will appear here automatically.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const handleStart = async () => {
     const parsed = parseSourceId(selectedSourceId);
     setError(null);
     setIsStarting(true);
     try {
-      const result = await startCamera(parsed.type, parsed.id);
-      setCameraState(result);
+      const result = await startCamera(
+        parsed.type,
+        parsed.id,
+        cameraOwnerRef.current,
+      );
+      applyCameraState(result);
       if (result.error) setError(result.error);
       else {
         const startedAt = new Date();
@@ -562,7 +636,7 @@ function Dashboard() {
   const handleStop = async () => {
     try {
       setError(null);
-      const result = await stopCamera();
+      const result = await stopCamera(cameraOwnerRef.current);
       setFrameData(null);
       setLiveFps(0);
       lastFrameTsRef.current = null;
@@ -570,7 +644,7 @@ function Dashboard() {
       endFleetSession(sessionIdsById[selectedDriver.id]);
       setDepartureTimesById((prev) => ({ ...prev, [selectedDriver.id]: null }));
       setSessionIdsById((prev) => ({ ...prev, [selectedDriver.id]: null }));
-      setCameraState(result);
+      applyCameraState(result);
     } catch (e) {
       console.error("[Dashboard] Failed to stop camera:", e);
       setError("Failed to stop camera");
@@ -603,8 +677,8 @@ function Dashboard() {
   const handleMediaPipeToggle = async () => {
     const nextMode = cameraState?.mode === "driver" ? "idle" : "driver";
     try {
-      const result = await setCameraMode(nextMode);
-      setCameraState(result);
+      const result = await setCameraMode(nextMode, cameraOwnerRef.current);
+      applyCameraState(result);
     } catch (e) {
       console.error("[Dashboard] Failed to toggle MediaPipe:", e);
       setError("Failed to change MediaPipe state");
@@ -646,10 +720,10 @@ function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         className="mb-8"
       >
-        <p className="eyebrow mb-2">Command Center</p>
-        <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
-          Fleet Monitoring
-        </h1>
+          <p className="eyebrow mb-2">{t("command_center")}</p>
+          <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
+            {t("fleet_monitoring")}
+          </h1>
       </motion.div>
 
       <motion.div
@@ -660,7 +734,7 @@ function Dashboard() {
       >
         <p className="eyebrow mb-3">Drivers on Duty:</p>
         <div className="flex flex-wrap gap-3">
-        {DRIVERS.map((driver) => (
+        {drivers.map((driver) => (
           <button
             key={driver.id}
             type="button"

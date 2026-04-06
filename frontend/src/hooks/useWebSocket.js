@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { getBackendWsBase } from "../services/api";
 
 export function useWebSocket(path) {
   const [isConnected, setIsConnected] = useState(false);
@@ -7,9 +8,7 @@ export function useWebSocket(path) {
   const reconnectTimeoutRef = useRef(null);
 
   const connect = useCallback(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const url = `${protocol}//${host}${path}`;
+    const url = `${getBackendWsBase()}${path}`;
 
     const ws = new WebSocket(url);
 

@@ -48,6 +48,37 @@ export function readPlatformLogs() {
   return safeRead();
 }
 
+export function clearPlatformLogModule(moduleName) {
+  const store = safeRead();
+
+  if (moduleName === "fleet") {
+    store.fleet = {
+      ...(store.fleet || {}),
+      sessions: [],
+      activeSessionId: null,
+    };
+    safeWrite(store);
+    return;
+  }
+
+  if (moduleName === "attendance") {
+    store.attendance = {
+      ...(store.attendance || {}),
+      sessions: [],
+    };
+    safeWrite(store);
+    return;
+  }
+
+  if (moduleName === "gatePpe") {
+    store.gatePpe = {
+      ...(store.gatePpe || {}),
+      sessions: [],
+    };
+    safeWrite(store);
+  }
+}
+
 export function beginFleetSession({ driverName, truckId, sourceLabel }) {
   const store = safeRead();
   const sessionId = `fleet-${Date.now()}`;
@@ -105,4 +136,3 @@ export function appendFleetEvent(sessionId, event) {
   });
   safeWrite(store);
 }
-

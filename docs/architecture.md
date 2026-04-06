@@ -4,6 +4,12 @@
 
 Local-first industrial safety monitoring system.
 
+## Near-Term Build Notes
+
+- Seed the attendance database with 2-3 real test workers for face-recognition check-in validation.
+- Add PPE recognition/reference storage so compliance decisions are backed by real records.
+- Keep manual override event logging in scope with worker, time, camera, and trigger metadata.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     WINDOWS LAPTOP                          │

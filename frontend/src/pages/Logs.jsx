@@ -3,31 +3,18 @@
  * "Precision Command" Design System
  */
 
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { readPlatformLogs } from "../utils/platformLogs";
-import { DriversIcon, AttendanceIcon, ShieldIcon } from "../components/icons";
-
-const attendanceSessions = [
-  {
-    id: "att-01",
-    title: "Morning Check-In Session",
-    startedAt: "08:00 AM",
-    summary: [
-      "12 workers checked in",
-      "2 manual approvals",
-      "0 access denials",
-    ],
-  },
-];
-
-const gatePpeSessions = [
-  {
-    id: "ppe-01",
-    title: "Gate PPE Session A",
-    startedAt: "07:35 AM",
-    summary: ["3 vest warnings", "1 helmet violation", "1 manual override"],
-  },
-];
+import { useAppLanguage } from "../contexts/AppLanguageContext";
+import {
+  clearPlatformLogModule,
+  readPlatformLogs,
+} from "../utils/platformLogs";
+import {
+  AlertTriangleIcon,
+  DriversIcon,
+  AttendanceIcon,
+} from "../components/icons";
 
 function formatSessionTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString("en-US", {
@@ -64,23 +51,31 @@ const logCategories = [
       "Worker check-ins, shift approvals, and access activity by session.",
   },
   {
-    icon: ShieldIcon,
+    icon: AlertTriangleIcon,
     color: "var(--color-warning)",
-    type: "Gate & PPE Logs",
+    type: "PPE Logs",
     description:
-      "Smart gate approvals, PPE detection sessions, and restricted-entry warnings.",
+      "PPE detections, access decisions, and override activity by session.",
   },
 ];
 
 function Logs() {
-  const store = readPlatformLogs();
+  const { t } = useAppLanguage();
+  const [store, setStore] = useState(() => readPlatformLogs());
   const fleetSessions = store.fleet.sessions || [];
+  const attendanceSessions = store.attendance?.sessions || [];
+  const ppeSessions = store.gatePpe?.sessions || [];
 
   const counts = [
     `${fleetSessions.length} session${fleetSessions.length === 1 ? "" : "s"} tracked`,
     `${attendanceSessions.length} session${attendanceSessions.length === 1 ? "" : "s"} open`,
-    `${gatePpeSessions.length} session${gatePpeSessions.length === 1 ? "" : "s"} open`,
+    `${ppeSessions.length} session${ppeSessions.length === 1 ? "" : "s"} open`,
   ];
+
+  const handleClearModule = (moduleName) => {
+    clearPlatformLogModule(moduleName);
+    setStore(readPlatformLogs());
+  };
 
   return (
     <div className="min-h-screen p-6 xl:p-8">
@@ -90,14 +85,10 @@ function Logs() {
         animate={{ opacity: 1, y: 0 }}
         className="mb-8"
       >
-        <p className="eyebrow mb-2">Unified Audit Trail</p>
+        <p className="eyebrow mb-2">{t("unified_audit_trail")}</p>
         <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
-          Platform Logs
+          {t("platform_logs")}
         </h1>
-        <p className="mt-3 max-w-3xl text-base text-secondary">
-          Review fleet sessions, workforce check-ins, and gate/PPE activity in
-          one operational archive.
-        </p>
       </motion.section>
 
       {/* Category cards */}
@@ -147,7 +138,16 @@ function Logs() {
             <h2 className="font-display text-xl font-semibold text-primary">
               Fleet Sessions
             </h2>
-            <span className="text-sm text-secondary">Driver history</span>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-secondary">Driver history</span>
+              <button
+                type="button"
+                onClick={() => handleClearModule("fleet")}
+                className="btn btn-secondary h-10 px-4"
+              >
+                Clear
+              </button>
+            </div>
           </div>
           {fleetSessions.length > 0 ? (
             fleetSessions.map((session, index) => (
@@ -237,36 +237,96 @@ function Logs() {
             <h2 className="font-display text-xl font-semibold text-primary">
               Attendance Sessions
             </h2>
-            <span className="text-sm text-secondary">Workforce flow</span>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-secondary">Workforce flow</span>
+              <button
+                type="button"
+                onClick={() => handleClearModule("attendance")}
+                className="btn btn-secondary h-10 px-4"
+              >
+                Clear
+              </button>
+            </div>
           </div>
-          {attendanceSessions.map((session) => (
-            <article key={session.id} className="panel">
-              <div className="panel__header border-b-0 pb-0">
-                <div>
-                  <p className="eyebrow text-[10px]">Attendance</p>
-                  <h3 className="mt-1 font-display text-lg font-semibold text-primary">
-                    {session.title}
-                  </h3>
-                  <p className="mt-1 text-sm text-secondary">
-                    Started {session.startedAt}
-                  </p>
-                </div>
-              </div>
-              <div className="panel__content space-y-3">
-                {session.summary.map((item) => (
-                  <div
-                    key={item}
-                    className="rounded-xl border border-default bg-surface px-4 py-3 text-sm font-medium text-primary"
-                  >
-                    {item}
+          {attendanceSessions.length > 0 ? (
+            attendanceSessions.map((session, index) => (
+              <article key={session.id} className="panel">
+                <div className="panel__header border-b-0 pb-0">
+                  <div>
+                    <p className="eyebrow text-[10px]">
+                      Attendance Session {index + 1}
+                    </p>
+                    <h3 className="mt-1 font-display text-lg font-semibold text-primary">
+                      {session.title || session.workerName || "Attendance Session"}
+                    </h3>
+                    <p className="mt-1 text-sm text-secondary">
+                      Started{" "}
+                      {session.startedAt
+                        ? formatSessionTime(session.startedAt)
+                        : "Unknown"}
+                    </p>
                   </div>
-                ))}
+                  <span className="badge badge-success">
+                    {(session.events || []).length} event
+                    {(session.events || []).length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="panel__content space-y-3">
+                  {(session.events || []).length > 0 ? (
+                    session.events.map((event) => (
+                      <div
+                        key={event.id}
+                        className="rounded-xl border border-default bg-surface px-4 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-primary">
+                              {event.details || event.title || "Attendance event"}
+                            </p>
+                            <p className="mt-1 text-sm text-secondary">
+                              {event.status || event.sourceLabel || "Attendance"}
+                            </p>
+                          </div>
+                          <span className="text-sm text-tertiary">
+                            {event.timestamp
+                              ? formatSessionTime(event.timestamp)
+                              : "--"}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-default bg-surface px-4 py-4 text-sm text-secondary">
+                      No attendance events were logged during this session.
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="relative overflow-hidden rounded-xl border border-dashed border-default bg-card p-8 text-center">
+              <div
+                className="pointer-events-none absolute inset-0 opacity-30"
+                style={{
+                  background:
+                    "radial-gradient(ellipse at 50% 0%, var(--color-success-muted), transparent 60%)",
+                }}
+              />
+              <div className="relative">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-success-muted)]">
+                  <AttendanceIcon className="h-6 w-6 text-[var(--color-success)]" />
+                </div>
+                <p className="font-medium text-primary">No Attendance Sessions</p>
+                <p className="mt-1 text-sm text-secondary">
+                  Attendance history will appear here once real worker check-ins are
+                  logged.
+                </p>
               </div>
-            </article>
-          ))}
+            </div>
+          )}
         </motion.section>
 
-        {/* Gate & PPE Sessions */}
+        {/* PPE Sessions */}
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -275,35 +335,93 @@ function Logs() {
         >
           <div className="flex items-center justify-between">
             <h2 className="font-display text-xl font-semibold text-primary">
-              Gate & PPE Sessions
+              PPE Sessions
             </h2>
-            <span className="text-sm text-secondary">Access compliance</span>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-secondary">PPE compliance</span>
+              <button
+                type="button"
+                onClick={() => handleClearModule("gatePpe")}
+                className="btn btn-secondary h-10 px-4"
+              >
+                Clear
+              </button>
+            </div>
           </div>
-          {gatePpeSessions.map((session) => (
-            <article key={session.id} className="panel">
-              <div className="panel__header border-b-0 pb-0">
-                <div>
-                  <p className="eyebrow text-[10px]">Gate & PPE</p>
-                  <h3 className="mt-1 font-display text-lg font-semibold text-primary">
-                    {session.title}
-                  </h3>
-                  <p className="mt-1 text-sm text-secondary">
-                    Started {session.startedAt}
-                  </p>
-                </div>
-              </div>
-              <div className="panel__content space-y-3">
-                {session.summary.map((item) => (
-                  <div
-                    key={item}
-                    className="rounded-xl border border-default bg-surface px-4 py-3 text-sm font-medium text-primary"
-                  >
-                    {item}
+          {ppeSessions.length > 0 ? (
+            ppeSessions.map((session, index) => (
+              <article key={session.id} className="panel">
+                <div className="panel__header border-b-0 pb-0">
+                  <div>
+                    <p className="eyebrow text-[10px]">PPE Session {index + 1}</p>
+                    <h3 className="mt-1 font-display text-lg font-semibold text-primary">
+                      {session.title || session.cameraSource || "PPE Session"}
+                    </h3>
+                    <p className="mt-1 text-sm text-secondary">
+                      Started{" "}
+                      {session.startedAt
+                        ? formatSessionTime(session.startedAt)
+                        : "Unknown"}
+                    </p>
                   </div>
-                ))}
+                  <span className="badge badge-warning">
+                    {(session.events || []).length} event
+                    {(session.events || []).length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="panel__content space-y-3">
+                  {(session.events || []).length > 0 ? (
+                    session.events.map((event) => (
+                      <div
+                        key={event.id}
+                        className="rounded-xl border border-default bg-surface px-4 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-primary">
+                              {event.details || event.title || "PPE event"}
+                            </p>
+                            <p className="mt-1 text-sm text-secondary">
+                              {event.status || event.sourceLabel || "PPE"}
+                            </p>
+                          </div>
+                          <span className="text-sm text-tertiary">
+                            {event.timestamp
+                              ? formatSessionTime(event.timestamp)
+                              : "--"}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-default bg-surface px-4 py-4 text-sm text-secondary">
+                      No PPE events were logged during this session.
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="relative overflow-hidden rounded-xl border border-dashed border-default bg-card p-8 text-center">
+              <div
+                className="pointer-events-none absolute inset-0 opacity-30"
+                style={{
+                  background:
+                    "radial-gradient(ellipse at 50% 0%, var(--color-warning-muted), transparent 60%)",
+                }}
+              />
+              <div className="relative">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-warning-muted)]">
+                  <AlertTriangleIcon className="h-6 w-6 text-[var(--color-warning)]" />
+                </div>
+                <p className="font-medium text-primary">No PPE Sessions</p>
+                <p className="mt-1 text-sm text-secondary">
+                  PPE history will appear here once live compliance detections are
+                  logged.
+                </p>
               </div>
-            </article>
-          ))}
+            </div>
+          )}
         </motion.section>
       </div>
     </div>

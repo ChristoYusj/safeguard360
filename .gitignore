@@ -55,6 +55,8 @@ htmlcov/
 # Build
 frontend/dist/
 *.log
+run-logs/
+backend/data/
 bridge/logs/*
 !bridge/logs/.gitkeep
 bridge/state/*

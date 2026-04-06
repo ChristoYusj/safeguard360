@@ -6,6 +6,7 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useThemePreference } from "../hooks/useThemePreference";
+import { useAppLanguage } from "../contexts/AppLanguageContext";
 import {
   DriversIcon,
   AttendanceIcon,
@@ -17,49 +18,6 @@ import {
   ShieldIcon,
   ChevronRightIcon,
 } from "../components/icons";
-
-const modules = [
-  {
-    id: "drivers",
-    name: "Drivers",
-    description: "Real-time fleet monitoring and driver fatigue detection",
-    route: "/drivers",
-    Icon: DriversIcon,
-    accent: "var(--color-accent-primary)",
-  },
-  {
-    id: "attendance",
-    name: "Attendance & PPE",
-    description: "Track check-ins, PPE verification, and shift management",
-    route: "/attendance",
-    Icon: AttendanceIcon,
-    accent: "var(--color-accent-secondary)",
-  },
-  {
-    id: "logs",
-    name: "Logs",
-    description: "System audit trail and session history",
-    route: "/logs",
-    Icon: LogsIcon,
-    accent: "var(--color-info)",
-  },
-  {
-    id: "chatbot",
-    name: "AI Chatbot",
-    description: "Intelligent assistant for operations support",
-    route: "/ai-chatbot",
-    Icon: ChatbotIcon,
-    accent: "var(--color-success)",
-  },
-  {
-    id: "settings",
-    name: "Settings",
-    description: "System configuration and workspace preferences",
-    route: "/settings",
-    Icon: SettingsIcon,
-    accent: "var(--color-text-tertiary)",
-  },
-];
 
 // Animation variants
 const containerVariants = {
@@ -91,6 +49,49 @@ const headerVariants = {
 
 function ModuleSelection() {
   const { darkMode, toggleDarkMode } = useThemePreference();
+  const { t } = useAppLanguage();
+  const modules = [
+    {
+      id: "drivers",
+      name: t("drivers_module"),
+      description: t("drivers_module_description"),
+      route: "/drivers",
+      Icon: DriversIcon,
+      accent: "var(--color-accent-primary)",
+    },
+    {
+      id: "attendance",
+      name: t("attendance_ppe"),
+      description: t("attendance_module_description"),
+      route: "/attendance",
+      Icon: AttendanceIcon,
+      accent: "var(--color-accent-secondary)",
+    },
+    {
+      id: "logs",
+      name: t("logs"),
+      description: t("logs_module_description"),
+      route: "/logs",
+      Icon: LogsIcon,
+      accent: "var(--color-info)",
+    },
+    {
+      id: "chatbot",
+      name: t("ai_chatbot"),
+      description: t("ai_chatbot_description"),
+      route: "/ai-chatbot",
+      Icon: ChatbotIcon,
+      accent: "var(--color-success)",
+    },
+    {
+      id: "settings",
+      name: t("settings"),
+      description: t("settings_module_description"),
+      route: "/settings",
+      Icon: SettingsIcon,
+      accent: "var(--color-text-tertiary)",
+    },
+  ];
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-base">
@@ -145,36 +146,16 @@ function ModuleSelection() {
           className="mb-16 text-center"
         >
           <div className="mb-6 inline-flex items-center justify-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--color-accent-primary)] shadow-[var(--glow-accent)]">
-              <ShieldIcon
-                size={32}
-                className="text-[var(--color-text-inverse)]"
-              />
-            </div>
+            <ShieldIcon size={86} />
           </div>
 
           <h1 className="font-display text-4xl font-bold tracking-tight text-primary md:text-5xl">
-            SafeGuard 360
+            {t("app_name")}
           </h1>
           <p className="mt-3 text-lg font-medium tracking-wide text-tertiary">
-            Unified AI Safety & Operations Platform
+            {t("platform_tagline")}
           </p>
         </motion.header>
-
-        {/* Welcome message */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.5 }}
-          className="mb-12 text-center"
-        >
-          <h2 className="font-display text-2xl font-semibold text-primary md:text-3xl">
-            Welcome, Operator
-          </h2>
-          <p className="mt-2 text-lg text-secondary">
-            Select a module to begin monitoring
-          </p>
-        </motion.div>
 
         {/* Module grid */}
         <motion.div
@@ -220,7 +201,7 @@ function ModuleSelection() {
 
                   {/* Arrow indicator */}
                   <div className="relative mt-4 flex items-center text-tertiary transition-colors group-hover:text-accent">
-                    <span className="text-sm font-medium">Open module</span>
+                    <span className="text-sm font-medium">{t("open_module")}</span>
                     <motion.div
                       className="ml-2"
                       initial={{ x: 0 }}
@@ -243,8 +224,7 @@ function ModuleSelection() {
           className="mt-auto pt-16 text-center"
         >
           <p className="text-sm text-muted">
-            © 2026 SafeGuard 360. All rights reserved. Authorized personnel
-            only.
+            {t("footer_notice")}
           </p>
         </motion.footer>
       </div>

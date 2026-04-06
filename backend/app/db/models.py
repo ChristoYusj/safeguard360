@@ -45,6 +45,25 @@ class Attendance(Base):
     person = relationship("Person", back_populates="attendance_records")
 
 
+class GateReview(Base):
+    """Low-confidence gate recognition awaiting operator review."""
+    __tablename__ = "gate_reviews"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    person_id = Column(String(36), ForeignKey("persons.id"), nullable=True)
+    person_name = Column(String(100), nullable=True)
+    suggested_direction = Column(String(10), nullable=True)
+    confidence = Column(Float, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(20), default="PENDING")
+    decision_note = Column(Text, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    decided_by = Column(String(100), nullable=True)
+    snapshot_path = Column(String(255), nullable=True)
+
+    person = relationship("Person")
+
+
 class Event(Base):
     """PPE and driver monitoring events."""
     __tablename__ = "events"

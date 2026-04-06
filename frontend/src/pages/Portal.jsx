@@ -3,18 +3,21 @@
  * "Precision Command" Design System
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useThemePreference } from "../hooks/useThemePreference";
+import { useAppLanguage } from "../contexts/AppLanguageContext";
+import {
+  writeSessionOperator,
+} from "../utils/sessionOperator";
 import {
   SunIcon,
   MoonIcon,
   ShieldIcon,
-  ActivityIcon,
 } from "../components/icons";
 
-const OPERATOR_EMAIL_KEY = "safeguard360-operator-email";
+const LEGACY_OPERATOR_EMAIL_KEY = "safeguard360-operator-email";
 
 // Animation variants
 const containerVariants = {
@@ -44,17 +47,21 @@ const floatVariants = {
 
 function Portal() {
   const { darkMode, toggleDarkMode } = useThemePreference();
-  const [operatorEmail, setOperatorEmail] = useState(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem(OPERATOR_EMAIL_KEY) || "";
-  });
-  const [isFocused, setIsFocused] = useState({ email: false, password: false });
+  const { t } = useAppLanguage();
+  const [operatorEmail, setOperatorEmail] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem(LEGACY_OPERATOR_EMAIL_KEY);
+  }, []);
 
   const handleSignIn = () => {
     if (typeof window === "undefined") return;
-    const normalizedEmail =
-      operatorEmail.trim() || "operator@safeguard360.local";
-    window.localStorage.setItem(OPERATOR_EMAIL_KEY, normalizedEmail);
+    window.localStorage.removeItem(LEGACY_OPERATOR_EMAIL_KEY);
+    writeSessionOperator({
+      email: operatorEmail.trim(),
+      signedInAt: new Date().toISOString(),
+    });
   };
 
   return (
@@ -125,19 +132,14 @@ function Portal() {
               animate="animate"
               className="mb-6 inline-flex"
             >
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-[var(--color-accent-primary)] shadow-[var(--glow-accent-strong)]">
-                <ShieldIcon
-                  size={40}
-                  className="text-[var(--color-text-inverse)]"
-                />
-              </div>
+              <ShieldIcon size={124} />
             </motion.div>
 
             <h1 className="font-display text-4xl font-bold tracking-tight text-primary md:text-5xl">
-              SafeGuard 360
+              {t("app_name")}
             </h1>
             <p className="mt-3 text-lg font-medium tracking-wide text-tertiary">
-              Unified AI Safety & Operations Platform
+              {t("platform_tagline")}
             </p>
           </motion.div>
 
@@ -174,28 +176,34 @@ function Portal() {
             <div className="relative">
               <div className="mb-8">
               <h2 className="font-display text-2xl font-semibold text-primary">
-                System Access
+                {t("system_access")}
               </h2>
               <p className="mt-2 text-secondary">
-                Enter your credentials to access the command center
+                {t("enter_credentials")}
               </p>
             </div>
 
-            <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
+            <form
+              className="space-y-6"
+              autoComplete="off"
+              onSubmit={(e) => e.preventDefault()}
+            >
               {/* Operator ID field */}
               <div className="space-y-2">
                 <label
                   htmlFor="operatorId"
                   className="block text-sm font-semibold text-primary"
                 >
-                  Operator ID
+                  {t("email")}
                 </label>
                 <input
                   id="operatorId"
                   type="text"
                   value={operatorEmail}
                   onChange={(e) => setOperatorEmail(e.target.value)}
-                  placeholder="Enter operator ID"
+                  placeholder={t("enter_account_email")}
+                  autoComplete="off"
+                  spellCheck="false"
                   className="input h-14 text-base"
                 />
               </div>
@@ -206,12 +214,13 @@ function Portal() {
                   htmlFor="accessKey"
                   className="block text-sm font-semibold text-primary"
                 >
-                  Access Key
+                  {t("access_key")}
                 </label>
                 <input
                   id="accessKey"
                   type="password"
-                  placeholder="Enter access key"
+                  placeholder={t("enter_access_key")}
+                  autoComplete="new-password"
                   className="input h-14 text-base"
                 />
               </div>
@@ -222,7 +231,7 @@ function Portal() {
                 onClick={handleSignIn}
                 className="btn btn-primary h-14 w-full text-base font-semibold"
               >
-                <span>Sign In</span>
+                <span>{t("sign_in")}</span>
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
@@ -239,27 +248,11 @@ function Portal() {
             <div className="mt-8 flex items-center justify-center gap-2 border-t border-default pt-6">
               <span className="status-dot status-dot-online pulse" />
               <span className="text-sm font-medium text-secondary">
-                System Status: Operational
+                {t("system_status_operational")}
               </span>
             </div>
             </div>
           </motion.section>
-
-          {/* Additional info */}
-          <motion.div
-            variants={itemVariants}
-            className="mt-8 flex items-center justify-center gap-6 text-sm text-muted"
-          >
-            <div className="flex items-center gap-2">
-              <ActivityIcon size={14} />
-              <span>99.9% Uptime</span>
-            </div>
-            <div className="h-4 w-px bg-[var(--color-border-default)]" />
-            <div className="flex items-center gap-2">
-              <ShieldIcon size={14} />
-              <span>256-bit Encryption</span>
-            </div>
-          </motion.div>
         </motion.div>
       </div>
 
@@ -271,7 +264,7 @@ function Portal() {
         className="fixed bottom-0 left-0 right-0 border-t border-default bg-base/80 py-4 backdrop-blur-xl"
       >
         <p className="text-center text-sm text-muted">
-          © 2026 SafeGuard 360. All rights reserved. Authorized personnel only.
+          {t("footer_notice")}
         </p>
       </motion.footer>
     </div>

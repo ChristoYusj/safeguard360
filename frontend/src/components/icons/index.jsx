@@ -222,29 +222,50 @@ export function ExternalLinkIcon(props) {
 }
 
 export function ShieldIcon(props) {
+  const { className = "", size = 20, ...rest } = props;
+
   return (
-    <Icon {...props}>
-      {/* Outer shield outline - heraldic shape */}
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      className={`shield-pulse ${className}`.trim()}
+      style={{ transformOrigin: "center center" }}
+      {...rest}
+    >
+      <circle cx="12" cy="12" r="10" fill="#C51F24" />
+      <circle cx="12" cy="12" r="7.25" fill="#F8FAFC" />
+      <circle cx="12" cy="12" r="5.2" fill="#1D4ED8" />
       <path
-        d="M12 2.5C12 2.5 7 3.8 4 4.2V10.5C4 16.2 8.5 19.8 12 21.5C15.5 19.8 20 16.2 20 10.5V4.2C17 3.8 12 2.5 12 2.5Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        d="m12 7.45 1.16 2.34 2.58.38-1.87 1.82.44 2.56L12 13.33l-2.31 1.22.44-2.56-1.87-1.82 2.58-.38L12 7.45Z"
+        fill="#F8FAFC"
       />
-      {/* Inner detail stroke for depth */}
-      <path
-        d="M12 4.8C12 4.8 8.2 5.8 6 6.1V10.8C6 15.2 9.5 17.9 12 19.2C14.5 17.9 18 15.2 18 10.8V6.1C15.8 5.8 12 4.8 12 4.8Z"
+      <circle
+        cx="12"
+        cy="12"
+        r="9.2"
         fill="none"
-        stroke="currentColor"
-        strokeWidth="0.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity="0.5"
+        stroke="rgba(15,23,42,0.18)"
+        strokeWidth="0.55"
       />
-    </Icon>
+      <circle
+        cx="12"
+        cy="12"
+        r="6.55"
+        fill="none"
+        stroke="rgba(15,23,42,0.12)"
+        strokeWidth="0.45"
+      />
+    </svg>
   );
+}
+
+export function CaptainShieldIcon({
+  className = "",
+  size = 20,
+  ...props
+}) {
+  return <ShieldIcon className={className} size={size} {...props} />;
 }
 
 export function ActivityIcon(props) {
@@ -327,6 +348,7 @@ export const icons = {
   refresh: RefreshIcon,
   externalLink: ExternalLinkIcon,
   shield: ShieldIcon,
+  captainShield: CaptainShieldIcon,
   activity: ActivityIcon,
   camera: CameraIcon,
   users: UsersIcon,
