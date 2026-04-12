@@ -43,6 +43,9 @@ class GateEventData:
     person_name: str = ""
     access_granted: bool = False
     ppe_compliant: bool = True
+    ppe_status: str = "not_evaluated"
+    ppe_details: dict = None
+    review_reasons: List[str] = None
 
 
 class CameraManager:
@@ -229,6 +232,9 @@ class CameraManager:
                                     person_name=ev.person_name or "",
                                     access_granted=ev.access_granted,
                                     ppe_compliant=ev.ppe_compliant,
+                                    ppe_status=ev.ppe_status,
+                                    ppe_details=ev.ppe_details or {},
+                                    review_reasons=ev.review_reasons or [],
                                 )
                             )
                             print(
@@ -344,6 +350,31 @@ class CameraManager:
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        warmup_started_at = time.time()
+        warmup_success = False
+        while time.time() - warmup_started_at < 2.5:
+            try:
+                ret, frame = self.cap.read()
+            except Exception as e:
+                self.error = f"Exception warming up camera: {e}"
+                print(f"[CameraManager] {self.error}")
+                break
+
+            if ret and frame is not None:
+                warmup_success = True
+                break
+
+            time.sleep(0.05)
+
+        if not warmup_success:
+            self.error = self.error or "Camera opened but did not deliver frames."
+            print(f"[CameraManager] {self.error}")
+            self.cap.release()
+            self.cap = None
+            self._clear_owner()
+            self._bump_state_version()
+            return False
         
         self.running = True
         self.frames_captured = 0

@@ -4,7 +4,7 @@ Attendance log API.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -16,6 +16,16 @@ from app.services.persons import (
     parse_image_data_url,
     read_image_data_url,
     write_attendance_snapshot,
+)
+from app.services.gate_compliance import (
+    create_event_record,
+    get_or_create_gate_policy,
+    normalize_ppe_details,
+    normalize_review_reasons,
+    ppe_reason_messages,
+    serialize_gate_policy,
+    serialize_ppe_details,
+    serialize_review_reasons,
 )
 
 router = APIRouter()
@@ -29,6 +39,10 @@ class AttendanceCreateRequest(BaseModel):
     access_granted: bool = True
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     snapshot_data_url: Optional[str] = None
+    ppe_details: Optional[Dict[str, Any]] = None
+    camera_source_type: Optional[str] = None
+    camera_source_id: Optional[str] = None
+    log_method: Optional[Literal["AUTO", "MANUAL"]] = None
 
 
 class AttendanceResponse(BaseModel):
@@ -42,6 +56,10 @@ class AttendanceResponse(BaseModel):
     access_granted: bool
     snapshot_path: Optional[str] = None
     confidence: Optional[float] = None
+    ppe_details: Dict[str, Any] = Field(default_factory=dict)
+    camera_source_type: Optional[str] = None
+    camera_source_id: Optional[str] = None
+    log_method: Optional[str] = None
 
 
 class GateReviewResponse(BaseModel):
@@ -58,6 +76,8 @@ class GateReviewResponse(BaseModel):
     decided_by: Optional[str] = None
     snapshot_path: Optional[str] = None
     snapshot_data_url: Optional[str] = None
+    review_reasons: List[str] = Field(default_factory=list)
+    ppe_details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GateReviewDecisionRequest(BaseModel):
@@ -75,6 +95,23 @@ class GateDirectionModeResponse(BaseModel):
     candidate_scope: str
 
 
+class PpePolicyResponse(BaseModel):
+    id: str
+    require_helmet: bool
+    require_vest: bool
+    deny_non_compliant_entry: bool
+    manual_override_enabled: bool
+    enforce_stage: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class PpePolicyUpdateRequest(BaseModel):
+    require_helmet: Optional[bool] = None
+    require_vest: Optional[bool] = None
+    deny_non_compliant_entry: Optional[bool] = None
+
+
 def _serialize_attendance(record: Attendance) -> AttendanceResponse:
     return AttendanceResponse(
         id=record.id,
@@ -87,6 +124,10 @@ def _serialize_attendance(record: Attendance) -> AttendanceResponse:
         access_granted=record.access_granted,
         snapshot_path=record.snapshot_path,
         confidence=record.confidence,
+        ppe_details=normalize_ppe_details(record.ppe_details),
+        camera_source_type=record.camera_source_type,
+        camera_source_id=record.camera_source_id,
+        log_method=record.log_method,
     )
 
 
@@ -105,6 +146,8 @@ def _serialize_gate_review(review: GateReview) -> GateReviewResponse:
         decided_by=review.decided_by,
         snapshot_path=review.snapshot_path,
         snapshot_data_url=read_image_data_url(review.snapshot_path),
+        review_reasons=normalize_review_reasons(review.review_reasons),
+        ppe_details=normalize_ppe_details(review.ppe_details),
     )
 
 
@@ -119,6 +162,10 @@ def _create_attendance_record(
     confidence: Optional[float],
     snapshot_data_url: Optional[str] = None,
     snapshot_path: Optional[str] = None,
+    ppe_details: Optional[Dict[str, Any]] = None,
+    camera_source_type: Optional[str] = None,
+    camera_source_id: Optional[str] = None,
+    log_method: Optional[str] = None,
 ) -> Attendance:
     record = Attendance(
         person_id=person.id if person else None,
@@ -127,6 +174,10 @@ def _create_attendance_record(
         ppe_compliant=ppe_compliant,
         access_granted=access_granted,
         confidence=confidence,
+        ppe_details=serialize_ppe_details(ppe_details),
+        camera_source_type=camera_source_type,
+        camera_source_id=camera_source_id,
+        log_method=log_method or "MANUAL",
     )
     db.add(record)
     db.flush()
@@ -138,6 +189,50 @@ def _create_attendance_record(
         record.snapshot_path = snapshot_path
 
     return record
+
+
+def _get_live_camera_source() -> Dict[str, Optional[str]]:
+    try:
+        from app.camera.manager import camera_manager
+
+        if not camera_manager.running:
+            return {"camera_source_type": None, "camera_source_id": None}
+
+        return {
+            "camera_source_type": camera_manager.source_type or None,
+            "camera_source_id": camera_manager.source_id or None,
+        }
+    except Exception:
+        return {"camera_source_type": None, "camera_source_id": None}
+
+
+def _resolve_override_reason_type(review_reasons: List[str]) -> Optional[str]:
+    has_face_reason = "face_confidence" in review_reasons
+    has_ppe_reason = any(
+        reason == "uncertain_ppe" or reason.startswith("missing_")
+        for reason in review_reasons
+    )
+    if has_face_reason and has_ppe_reason:
+        return "combined"
+    if has_ppe_reason:
+        return "ppe_non_compliance"
+    if has_face_reason:
+        return "face_confidence"
+    return None
+
+
+def _is_ppe_compliant_after_review(review_reasons: List[str], ppe_details: Dict[str, Any]) -> bool:
+    if any(
+        reason == "uncertain_ppe" or reason.startswith("missing_")
+        for reason in review_reasons
+    ):
+        return False
+    return ppe_details.get("status") in {
+        "compliant",
+        "skipped",
+        "unavailable",
+        "not_evaluated",
+    }
 
 
 @router.get("", response_model=List[AttendanceResponse])
@@ -183,6 +278,10 @@ def create_attendance_record(
         access_granted=payload.access_granted,
         confidence=payload.confidence,
         snapshot_data_url=payload.snapshot_data_url,
+        ppe_details=payload.ppe_details,
+        camera_source_type=payload.camera_source_type,
+        camera_source_id=payload.camera_source_id,
+        log_method=payload.log_method or "MANUAL",
     )
 
     db.commit()
@@ -194,6 +293,39 @@ def create_attendance_record(
     except Exception:
         pass
     return _serialize_attendance(record)
+
+
+@router.get("/ppe-policy", response_model=PpePolicyResponse)
+def get_ppe_policy(db: Session = Depends(get_db)):
+    policy = get_or_create_gate_policy(db)
+    db.commit()
+    db.refresh(policy)
+    return PpePolicyResponse(**serialize_gate_policy(policy))
+
+
+@router.put("/ppe-policy", response_model=PpePolicyResponse)
+def update_ppe_policy(
+    payload: PpePolicyUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    policy = get_or_create_gate_policy(db)
+
+    if payload.require_helmet is not None:
+        policy.require_helmet = payload.require_helmet
+    if payload.require_vest is not None:
+        policy.require_vest = payload.require_vest
+    if payload.deny_non_compliant_entry is not None:
+        policy.deny_non_compliant_entry = payload.deny_non_compliant_entry
+
+    db.commit()
+    db.refresh(policy)
+    try:
+        from app.services.gate_attendance import gate_attendance_recognizer
+
+        gate_attendance_recognizer.invalidate_cache()
+    except Exception:
+        pass
+    return PpePolicyResponse(**serialize_gate_policy(policy))
 
 
 @router.get("/reviews", response_model=List[GateReviewResponse])
@@ -234,6 +366,16 @@ def decide_gate_review(
     review.decided_at = datetime.utcnow()
     review.decided_by = payload.decided_by.strip() if payload.decided_by else "Authorized operator"
     review.decision_note = payload.note.strip() if payload.note else None
+    review_reasons = normalize_review_reasons(review.review_reasons)
+    ppe_details = normalize_ppe_details(review.ppe_details)
+    override_reason_type = _resolve_override_reason_type(review_reasons)
+
+    if payload.decision == "APPROVED":
+        ppe_details["override_used"] = True
+        ppe_details["override_reason_type"] = override_reason_type
+    elif override_reason_type:
+        ppe_details["override_reason_type"] = override_reason_type
+    review.ppe_details = serialize_ppe_details(ppe_details)
 
     try:
         from app.services.gate_attendance import gate_attendance_recognizer
@@ -247,15 +389,64 @@ def decide_gate_review(
 
     if payload.decision == "APPROVED":
         person = db.query(Person).filter(Person.id == review.person_id).first() if review.person_id else None
+        camera_source = _get_live_camera_source()
         _create_attendance_record(
             db,
             person=person,
             person_name=review.person_name or (person.name if person else "Unknown worker"),
             direction=review.suggested_direction or "ENTRY",
-            ppe_compliant=True,
+            ppe_compliant=_is_ppe_compliant_after_review(review_reasons, ppe_details),
             access_granted=True,
             confidence=review.confidence,
             snapshot_path=review.snapshot_path,
+            ppe_details=ppe_details,
+            camera_source_type=camera_source["camera_source_type"],
+            camera_source_id=camera_source["camera_source_id"],
+            log_method="MANUAL",
+        )
+        if override_reason_type in {"ppe_non_compliance", "combined"}:
+            create_event_record(
+                db,
+                category="PPE",
+                event_type="PPE_OVERRIDE_GRANTED",
+                severity="WARNING",
+                message=(
+                    f"{review.person_name or 'Worker'} was granted entry after PPE override."
+                ),
+                data={
+                    "person_id": review.person_id,
+                    "person_name": review.person_name,
+                    "direction": review.suggested_direction,
+                    "review_id": review.id,
+                    "review_reasons": review_reasons,
+                    "ppe_details": ppe_details,
+                    "decided_by": review.decided_by,
+                },
+                snapshot_path=review.snapshot_path,
+                is_resolved=True,
+            )
+    elif override_reason_type in {"ppe_non_compliance", "combined"}:
+        create_event_record(
+            db,
+            category="PPE",
+            event_type="PPE_ENTRY_DENIED",
+            severity="ALERT",
+            message=(
+                f"{review.person_name or 'Worker'} was denied entry after PPE review."
+            ),
+            data={
+                "person_id": review.person_id,
+                "person_name": review.person_name,
+                "direction": review.suggested_direction,
+                "review_id": review.id,
+                "review_reasons": review_reasons,
+                "ppe_details": ppe_details,
+                "decided_by": review.decided_by,
+                "decision_note": review.decision_note,
+                "reason_messages": ppe_reason_messages(review_reasons),
+            },
+            snapshot_path=review.snapshot_path,
+            is_resolved=True,
         )
 
     db.commit()
@@ -283,6 +474,13 @@ def get_gate_direction_mode():
 @router.post("/gate-mode", response_model=GateDirectionModeResponse)
 def set_gate_direction_mode(payload: GateDirectionModeRequest):
     from app.services.gate_attendance import gate_attendance_recognizer
+    from app.camera.manager import camera_manager
+
+    if camera_manager.running:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stop the active feed before changing between Check-In and Check-Out mode.",
+        )
 
     try:
         direction_mode = gate_attendance_recognizer.set_gate_direction_mode(payload.direction_mode)

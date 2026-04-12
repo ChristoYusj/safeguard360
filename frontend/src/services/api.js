@@ -158,20 +158,40 @@ export async function setCameraMode(mode, owner = null) {
   return readJsonResponse(res);
 }
 
-export async function getAttendance() {
-  const res = await fetch(`${API_BASE}/attendance`);
+export async function getAttendance({ limit = 50, personId } = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (personId) {
+    params.set("person_id", personId);
+  }
+
+  const res = await fetch(`${API_BASE}/attendance?${params.toString()}`);
   return readJsonResponse(res);
 }
 
-export async function getAttendanceReviews(statusFilter = "all") {
+export async function getAttendanceReviews(statusFilter = "all", { limit = 50 } = {}) {
   const res = await fetch(
-    `${API_BASE}/attendance/reviews?status_filter=${encodeURIComponent(statusFilter)}`,
+    `${API_BASE}/attendance/reviews?status_filter=${encodeURIComponent(statusFilter)}&limit=${encodeURIComponent(limit)}`,
   );
   return readJsonResponse(res);
 }
 
 export async function getAttendanceGateMode() {
   const res = await fetch(`${API_BASE}/attendance/gate-mode`);
+  return readJsonResponse(res);
+}
+
+export async function getAttendancePpePolicy() {
+  const res = await fetch(`${API_BASE}/attendance/ppe-policy`);
+  return readJsonResponse(res);
+}
+
+export async function updateAttendancePpePolicy(data) {
+  const res = await fetch(`${API_BASE}/attendance/ppe-policy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
   return readJsonResponse(res);
 }
 
@@ -194,7 +214,13 @@ export async function decideAttendanceReview(reviewId, data) {
 }
 
 export async function getEvents(category) {
-  const res = await fetch(`${API_BASE}/events?category=${category}`);
+  const query = new URLSearchParams();
+  if (category) {
+    query.set("category", category);
+  }
+  const res = await fetch(
+    `${API_BASE}/events${query.toString() ? `?${query.toString()}` : ""}`,
+  );
   return readJsonResponse(res);
 }
 

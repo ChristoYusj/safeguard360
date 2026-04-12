@@ -1,10 +1,11 @@
 """
 Database Models (SQLAlchemy ORM)
 """
-from sqlalchemy import Column, String, Boolean, Integer, Float, DateTime, Text, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 import uuid
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -41,6 +42,10 @@ class Attendance(Base):
     access_granted = Column(Boolean, default=True)
     snapshot_path = Column(String(255), nullable=True)
     confidence = Column(Float, nullable=True)
+    ppe_details = Column(Text, nullable=True)
+    camera_source_type = Column(String(50), nullable=True)
+    camera_source_id = Column(String(100), nullable=True)
+    log_method = Column(String(20), nullable=True)
     
     person = relationship("Person", back_populates="attendance_records")
 
@@ -60,8 +65,24 @@ class GateReview(Base):
     decided_at = Column(DateTime, nullable=True)
     decided_by = Column(String(100), nullable=True)
     snapshot_path = Column(String(255), nullable=True)
+    review_reasons = Column(Text, nullable=True)
+    ppe_details = Column(Text, nullable=True)
 
     person = relationship("Person")
+
+
+class GatePolicy(Base):
+    """Global gate compliance defaults."""
+    __tablename__ = "gate_policies"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    require_helmet = Column(Boolean, default=True)
+    require_vest = Column(Boolean, default=True)
+    deny_non_compliant_entry = Column(Boolean, default=True)
+    manual_override_enabled = Column(Boolean, default=True)
+    enforce_stage = Column(String(20), default="ENTRY_ONLY")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Event(Base):

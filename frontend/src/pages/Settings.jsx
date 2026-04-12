@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import {
+  deletePerson,
+  getAttendancePpePolicy,
+  getPersons,
+  updateAttendancePpePolicy,
+  updatePerson,
+} from "../services/api";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
 import {
@@ -63,6 +70,108 @@ const itemVariants = {
 };
 
 const supportEmail = "ENV_SUPPORT_EMAIL";
+const ENROLLMENT_SHIFT_LABELS = {
+  day: "Day Shift (06:00 - 14:00)",
+  swing: "Swing Shift (14:00 - 22:00)",
+  night: "Night Shift (22:00 - 06:00)",
+};
+
+function normalizeWorkerMatchValue(value) {
+  return value?.trim().toLowerCase() || "";
+}
+
+function mapWorkerShiftToEnrollmentShift(shiftLabel) {
+  const value = shiftLabel?.trim().toLowerCase() || "";
+
+  if (!value) {
+    return "day";
+  }
+
+  if (value.includes("night")) {
+    return "night";
+  }
+
+  if (value.includes("mid") || value.includes("swing") || value.includes("late")) {
+    return "swing";
+  }
+
+  return "day";
+}
+
+function getMatchedEnrollmentPerson(worker, persons) {
+  const normalizedBadgeId = normalizeWorkerMatchValue(worker.badgeId);
+  const normalizedName = normalizeWorkerMatchValue(worker.name);
+  const linkedPersonId = worker.enrollmentPersonId;
+
+  return (
+    persons.find((person) => {
+      if (linkedPersonId && String(person.id) === String(linkedPersonId)) {
+        return true;
+      }
+
+      const normalizedEmployeeId = normalizeWorkerMatchValue(person.employee_id);
+      const normalizedPersonName = normalizeWorkerMatchValue(person.name);
+
+      return (
+        (normalizedBadgeId && normalizedEmployeeId === normalizedBadgeId) ||
+        (normalizedName && normalizedPersonName === normalizedName)
+      );
+    }) || null
+  );
+}
+
+function mapEnrollmentPersonToWorker(person) {
+  return {
+    id: `worker-person-${person.id}`,
+    enrollmentPersonId: person.id,
+    syncSource: "enrollment",
+    name: person.name || "Unnamed worker",
+    badgeId: person.employee_id || "",
+    shift: ENROLLMENT_SHIFT_LABELS[person.shift_id] || "Day Shift",
+    portrait: person.thumbnail_data_url || DEFAULT_DRIVER_PORTRAIT,
+    addedAt: person.created_at || new Date().toISOString(),
+  };
+}
+
+function mergeAttendanceWorkersWithPersons(attendanceWorkers, persons) {
+  const matchedPersonIds = new Set();
+
+  const mergedWorkers = attendanceWorkers
+    .map((worker) => {
+      const matchedPerson = getMatchedEnrollmentPerson(worker, persons);
+
+      if (worker.syncSource === "enrollment" && !matchedPerson) {
+        return null;
+      }
+
+      if (!matchedPerson) {
+        const { enrollmentPersonId, syncSource, ...localWorker } = worker;
+        return localWorker;
+      }
+
+      matchedPersonIds.add(String(matchedPerson.id));
+
+      return {
+        ...worker,
+        enrollmentPersonId: matchedPerson.id,
+        name: matchedPerson.name || worker.name,
+        badgeId: matchedPerson.employee_id || worker.badgeId,
+        shift:
+          ENROLLMENT_SHIFT_LABELS[matchedPerson.shift_id] ||
+          worker.shift ||
+          "Day Shift",
+        portrait: matchedPerson.thumbnail_data_url || worker.portrait,
+        addedAt: worker.addedAt || matchedPerson.created_at || new Date().toISOString(),
+      };
+    })
+    .filter(Boolean);
+
+  const syncedEnrollmentOnlyWorkers = persons
+    .filter((person) => !matchedPersonIds.has(String(person.id)))
+    .map((person) => mapEnrollmentPersonToWorker(person));
+
+  return [...mergedWorkers, ...syncedEnrollmentOnlyWorkers];
+}
 
 function ToggleSwitch({ checked, onChange, ariaLabel }) {
   return (
@@ -138,12 +247,11 @@ function createDriverFormTemplate(database) {
   };
 }
 
-function createWorkerFormTemplate(defaultCamera, drivers, worker) {
+function createWorkerFormTemplate(drivers, worker) {
   return {
     name: worker?.name || "",
     badgeId: worker?.badgeId || "",
     shift: worker?.shift || drivers[0]?.shift || "",
-    camera: worker?.camera || defaultCamera,
     portrait: worker?.portrait || DEFAULT_DRIVER_PORTRAIT,
   };
 }
@@ -164,16 +272,21 @@ function Settings() {
     createDriverFormTemplate(readTestDatabase()),
   );
   const [workerForm, setWorkerForm] = useState(() =>
-    createWorkerFormTemplate(
-      readAppSettings().attendanceCamera,
-      readTestDatabase().drivers,
-    ),
+    createWorkerFormTemplate(readTestDatabase().drivers),
   );
   const [showDriverForm, setShowDriverForm] = useState(false);
   const [showWorkerForm, setShowWorkerForm] = useState(false);
   const [editingDriverId, setEditingDriverId] = useState(null);
   const [editingWorkerId, setEditingWorkerId] = useState(null);
   const [workerSuccessPrompt, setWorkerSuccessPrompt] = useState(null);
+  const [workerError, setWorkerError] = useState("");
+  const [enrollmentPersons, setEnrollmentPersons] = useState([]);
+  const [ppePolicy, setPpePolicy] = useState({
+    require_helmet: true,
+    require_vest: true,
+    deny_non_compliant_entry: true,
+  });
+  const [ppePolicyError, setPpePolicyError] = useState("");
 
   useEffect(() => {
     writeAppSettings(settings);
@@ -183,8 +296,52 @@ function Settings() {
     writeTestDatabase(database);
   }, [database]);
 
+  const syncEnrolledWorkers = async () => {
+    const persons = await getPersons();
+    setEnrollmentPersons(persons || []);
+    setDatabase((current) => ({
+      ...current,
+      attendanceWorkers: mergeAttendanceWorkersWithPersons(
+        current.attendanceWorkers,
+        persons || [],
+      ),
+    }));
+    return persons || [];
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    syncEnrolledWorkers().catch((error) => {
+      if (isMounted) {
+        console.error("Failed to sync enrolled workers into Settings.", error);
+      }
+    });
+
+    getAttendancePpePolicy()
+      .then((policy) => {
+        if (isMounted && policy) {
+          setPpePolicy({
+            require_helmet: policy.require_helmet !== false,
+            require_vest: policy.require_vest !== false,
+            deny_non_compliant_entry: policy.deny_non_compliant_entry !== false,
+          });
+        }
+      })
+      .catch((error) => {
+        if (isMounted) {
+          console.error("Failed to load PPE policy.", error);
+          setPpePolicyError("PPE policy could not be loaded from the backend.");
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const sessionOperator = readSessionOperator();
-  const signedInEmail = sessionOperator.email || "No email stored for this session";
+  const signedInEmail = sessionOperator.email || "No operator signed in";
   const accountType =
     accessLevelLabels[settings.accessLevel] || "Authorized operator";
   const driverRoleOptions = useMemo(
@@ -237,6 +394,30 @@ function Settings() {
       ...current,
       [key]: value,
     }));
+  };
+
+  const handlePpePolicyChange = async (key, value) => {
+    const previousPolicy = { ...ppePolicy };
+    setPpePolicyError("");
+    setPpePolicy((current) => ({
+      ...current,
+      [key]: value,
+    }));
+
+    try {
+      const nextPolicy = await updateAttendancePpePolicy({
+        [key]: value,
+      });
+      setPpePolicy({
+        require_helmet: nextPolicy.require_helmet !== false,
+        require_vest: nextPolicy.require_vest !== false,
+        deny_non_compliant_entry: nextPolicy.deny_non_compliant_entry !== false,
+      });
+    } catch (error) {
+      console.error("Failed to update PPE policy.", error);
+      setPpePolicy(previousPolicy);
+      setPpePolicyError(error.message || "PPE policy update failed.");
+    }
   };
 
   const handleAddDriver = (event) => {
@@ -355,7 +536,7 @@ function Settings() {
     }
   };
 
-  const handleAddWorker = (event) => {
+  const handleAddWorker = async (event) => {
     event.preventDefault();
 
     if (!workerForm.name.trim() || !workerForm.badgeId.trim()) {
@@ -366,37 +547,72 @@ function Settings() {
     const currentWorker = database.attendanceWorkers.find(
       (worker) => worker.id === editingWorkerId,
     );
+    const matchedEnrollmentPerson = getMatchedEnrollmentPerson(
+      currentWorker || workerForm,
+      enrollmentPersons,
+    );
     const nextWorker = {
       id: editingWorkerId || createDatabaseId("worker"),
+      enrollmentPersonId:
+        currentWorker?.enrollmentPersonId || matchedEnrollmentPerson?.id || null,
+      syncSource:
+        currentWorker?.syncSource ||
+        (matchedEnrollmentPerson ? "enrollment" : undefined),
       name: workerForm.name.trim(),
       badgeId: workerForm.badgeId.trim(),
       shift: workerForm.shift,
-      camera: workerForm.camera,
       portrait: workerForm.portrait || DEFAULT_DRIVER_PORTRAIT,
       addedAt: currentWorker?.addedAt || new Date().toISOString(),
     };
 
-    setDatabase((current) => ({
-      ...current,
-      attendanceWorkers: editingWorkerId
-        ? current.attendanceWorkers.map((worker) =>
-            worker.id === editingWorkerId ? nextWorker : worker,
-          )
-        : [nextWorker, ...current.attendanceWorkers],
-    }));
-    setWorkerSuccessPrompt(
-      isNewWorker
-        ? {
-            workerId: nextWorker.id,
-            workerName: nextWorker.name,
-          }
-        : null,
-    );
-    setWorkerForm(
-      createWorkerFormTemplate(settings.attendanceCamera, database.drivers),
-    );
-    setShowWorkerForm(false);
-    setEditingWorkerId(null);
+    setWorkerError("");
+
+    try {
+      if (matchedEnrollmentPerson) {
+        await updatePerson(matchedEnrollmentPerson.id, {
+          name: nextWorker.name,
+          employee_id: nextWorker.badgeId || null,
+          shift_id: mapWorkerShiftToEnrollmentShift(nextWorker.shift),
+          is_active: true,
+        });
+        setEnrollmentPersons((current) =>
+          current.map((person) =>
+            String(person.id) === String(matchedEnrollmentPerson.id)
+              ? {
+                  ...person,
+                  name: nextWorker.name,
+                  employee_id: nextWorker.badgeId || null,
+                  shift_id: mapWorkerShiftToEnrollmentShift(nextWorker.shift),
+                }
+              : person,
+          ),
+        );
+      }
+
+      setDatabase((current) => ({
+        ...current,
+        attendanceWorkers: editingWorkerId
+          ? current.attendanceWorkers.map((worker) =>
+              worker.id === editingWorkerId ? nextWorker : worker,
+            )
+          : [nextWorker, ...current.attendanceWorkers],
+      }));
+      setWorkerSuccessPrompt(
+        isNewWorker
+          ? {
+              workerId: nextWorker.id,
+              workerName: nextWorker.name,
+            }
+          : null,
+      );
+      setWorkerForm(
+        createWorkerFormTemplate(database.drivers),
+      );
+      setShowWorkerForm(false);
+      setEditingWorkerId(null);
+    } catch (error) {
+      setWorkerError(error.message || "Failed to save worker.");
+    }
   };
 
   const handleWorkerPortraitUpload = (event) => {
@@ -419,36 +635,54 @@ function Settings() {
   };
 
   const handleEditWorker = (worker) => {
+    setWorkerError("");
     setWorkerSuccessPrompt(null);
     setEditingWorkerId(worker.id);
     setWorkerForm(
-      createWorkerFormTemplate(
-        settings.attendanceCamera,
-        database.drivers,
-        worker,
-      ),
+      createWorkerFormTemplate(database.drivers, worker),
     );
     setShowWorkerForm(true);
   };
 
   const resetWorkerEditor = () => {
+    setWorkerError("");
     setWorkerForm(
-      createWorkerFormTemplate(settings.attendanceCamera, database.drivers),
+      createWorkerFormTemplate(database.drivers),
     );
     setShowWorkerForm(false);
     setEditingWorkerId(null);
   };
 
-  const handleDeleteWorker = (workerId) => {
-    setDatabase((current) => ({
-      ...current,
-      attendanceWorkers: current.attendanceWorkers.filter(
-        (worker) => worker.id !== workerId,
-      ),
-    }));
+  const handleDeleteWorker = async (workerId) => {
+    const worker = database.attendanceWorkers.find((entry) => entry.id === workerId);
+    const matchedEnrollmentPerson = worker
+      ? getMatchedEnrollmentPerson(worker, enrollmentPersons)
+      : null;
 
-    if (editingWorkerId === workerId) {
-      resetWorkerEditor();
+    setWorkerError("");
+
+    try {
+      if (matchedEnrollmentPerson) {
+        await deletePerson(matchedEnrollmentPerson.id);
+        setEnrollmentPersons((current) =>
+          current.filter(
+            (person) => String(person.id) !== String(matchedEnrollmentPerson.id),
+          ),
+        );
+      }
+
+      setDatabase((current) => ({
+        ...current,
+        attendanceWorkers: current.attendanceWorkers.filter(
+          (worker) => worker.id !== workerId,
+        ),
+      }));
+
+      if (editingWorkerId === workerId) {
+        resetWorkerEditor();
+      }
+    } catch (error) {
+      setWorkerError(error.message || "Failed to delete worker.");
     }
   };
 
@@ -730,12 +964,14 @@ function Settings() {
                       {t("no_drivers_yet")}
                     </div>
                   ) : (
-                    database.drivers.map((driver) => (
+                    database.drivers
+                      .filter((driver) => driver.id !== editingDriverId)
+                      .map((driver) => (
                       <div
                         key={driver.id}
-                        className="rounded-xl border border-default bg-card px-5 py-2.5"
+                        className="rounded-2xl border border-default bg-card px-5 py-4"
                       >
-                        <div className="flex flex-col gap-1.5 md:flex-row md:items-start md:justify-between">
+                        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                           <div className="flex items-center gap-4">
                             <img
                               src={driver.portrait || DEFAULT_DRIVER_PORTRAIT}
@@ -751,10 +987,18 @@ function Settings() {
                                   .filter(Boolean)
                                   .join(" • ")}
                               </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {driver.shift ? (
+                                  <span className="badge badge-info">{driver.shift}</span>
+                                ) : null}
+                                {driver.assignedRoute ? (
+                                  <span className="badge badge-accent">{driver.assignedRoute}</span>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
-                          <div className="ml-4 flex w-[104px] shrink-0 flex-col items-end gap-2">
-                            <span className="text-xs text-secondary whitespace-nowrap">
+                          <div className="ml-4 flex w-[112px] shrink-0 flex-col items-end gap-2">
+                            <span className="rounded-full border border-default bg-surface px-3 py-1 text-xs text-secondary whitespace-nowrap">
                               {formatTimestamp(driver.addedAt)}
                             </span>
                             <div className="flex w-full flex-col gap-1.5">
@@ -779,9 +1023,6 @@ function Settings() {
                             </div>
                           </div>
                         </div>
-                        <p className="mt-1.5 text-base leading-snug text-secondary">
-                          {[driver.assignedRoute, driver.shift].filter(Boolean).join(" • ")}
-                        </p>
                       </div>
                     ))
                   )}
@@ -800,7 +1041,7 @@ function Settings() {
                   </h2>
                   <p className="mt-1 text-sm text-secondary">
                     {database.attendanceWorkers.length} worker
-                    {database.attendanceWorkers.length === 1 ? "" : "s"} stored locally.
+                    {database.attendanceWorkers.length === 1 ? "" : "s"} available in the worker database.
                   </p>
                 </div>
               </div>
@@ -827,6 +1068,70 @@ function Settings() {
               />
 
               <div className="rounded-xl border border-default bg-surface px-5 py-5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="max-w-2xl">
+                    <p className="font-semibold text-primary">PPE Gate Policy</p>
+                    <p className="mt-1 text-sm text-secondary">
+                      Apply one global entry policy for helmet and high-visibility vest checks.
+                      Checkout stays face-only.
+                    </p>
+                  </div>
+                  <span className="badge badge-warning">Entry only</span>
+                </div>
+                <div className="mt-4 space-y-3">
+                  <SettingRow
+                    label="Helmet required"
+                    description="Require a safety helmet before the worker can be checked in automatically."
+                    control={
+                      <ToggleSwitch
+                        checked={ppePolicy.require_helmet}
+                        onChange={() =>
+                          handlePpePolicyChange("require_helmet", !ppePolicy.require_helmet)
+                        }
+                        ariaLabel="Toggle helmet requirement"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    label="Vest required"
+                    description="Require a high-visibility vest before the worker can be checked in automatically."
+                    control={
+                      <ToggleSwitch
+                        checked={ppePolicy.require_vest}
+                        onChange={() =>
+                          handlePpePolicyChange("require_vest", !ppePolicy.require_vest)
+                        }
+                        ariaLabel="Toggle vest requirement"
+                      />
+                    }
+                  />
+                  <SettingRow
+                    label="Block missing PPE"
+                    description="Hold entry for operator review when the required PPE is missing or uncertain."
+                    control={
+                      <ToggleSwitch
+                        checked={ppePolicy.deny_non_compliant_entry}
+                        onChange={() =>
+                          handlePpePolicyChange(
+                            "deny_non_compliant_entry",
+                            !ppePolicy.deny_non_compliant_entry,
+                          )
+                        }
+                        ariaLabel="Toggle PPE entry blocking"
+                      />
+                    }
+                  />
+                </div>
+                {ppePolicyError ? (
+                  <div className="mt-4 rounded-xl border border-[var(--color-error)] bg-[var(--color-error-muted)] px-4 py-3">
+                    <p className="text-sm font-semibold" style={{ color: "var(--color-error)" }}>
+                      {ppePolicyError}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="rounded-xl border border-default bg-surface px-5 py-5">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="font-semibold text-primary">{t("worker_database")}</p>
@@ -844,12 +1149,7 @@ function Settings() {
                       }
                       setEditingWorkerId(null);
                       setShowWorkerForm(true);
-                      setWorkerForm(
-                        createWorkerFormTemplate(
-                          settings.attendanceCamera,
-                          database.drivers,
-                        ),
-                      );
+                      setWorkerForm(createWorkerFormTemplate(database.drivers));
                     }}
                     className="btn btn-secondary h-11 px-4"
                   >
@@ -918,6 +1218,14 @@ function Settings() {
                   </motion.div>
                 ) : null}
 
+                {workerError ? (
+                  <div className="mt-4 rounded-xl border border-[var(--color-error)] bg-[var(--color-error-muted)] px-4 py-3">
+                    <p className="text-sm font-semibold" style={{ color: "var(--color-error)" }}>
+                      {workerError}
+                    </p>
+                  </div>
+                ) : null}
+
                 {showWorkerForm ? (
                   <form
                     onSubmit={handleAddWorker}
@@ -960,22 +1268,6 @@ function Settings() {
                       {driverShiftOptions.map((option) => (
                         <option key={option} value={option}>
                           {option}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={workerForm.camera}
-                      onChange={(event) =>
-                        setWorkerForm((current) => ({
-                          ...current,
-                          camera: event.target.value,
-                        }))
-                      }
-                      className="input h-12"
-                    >
-                      {attendanceCameraOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
                         </option>
                       ))}
                     </select>
@@ -1023,12 +1315,14 @@ function Settings() {
                       {t("no_workers_yet")}
                     </div>
                   ) : (
-                    database.attendanceWorkers.map((worker) => (
+                    database.attendanceWorkers
+                      .filter((worker) => worker.id !== editingWorkerId)
+                      .map((worker) => (
                       <div
                         key={worker.id}
-                        className="rounded-xl border border-default bg-card px-5 py-2.5"
+                        className="rounded-2xl border border-default bg-card px-5 py-4"
                       >
-                        <div className="flex flex-col gap-1.5 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                           <div className="flex items-center gap-4">
                             <img
                               src={worker.portrait || DEFAULT_DRIVER_PORTRAIT}
@@ -1042,10 +1336,20 @@ function Settings() {
                               <p className="mt-1 text-base leading-snug text-secondary">
                                 {worker.badgeId || "No worker ID"}
                               </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {worker.shift ? (
+                                  <span className="badge badge-info">{worker.shift}</span>
+                                ) : null}
+                                {worker.enrollmentPersonId ? (
+                                  <span className="badge badge-success">Face Ready</span>
+                                ) : (
+                                  <span className="badge badge-warning">No Face Media</span>
+                                )}
+                              </div>
                             </div>
                           </div>
-                          <div className="ml-4 flex w-[104px] shrink-0 flex-col items-end gap-2">
-                            <span className="text-xs text-secondary whitespace-nowrap">
+                          <div className="ml-4 flex w-[112px] shrink-0 flex-col items-end gap-2">
+                            <span className="rounded-full border border-default bg-surface px-3 py-1 text-xs text-secondary whitespace-nowrap">
                               {formatTimestamp(worker.addedAt)}
                             </span>
                             <div className="flex w-full flex-col gap-1.5">
@@ -1070,16 +1374,6 @@ function Settings() {
                             </div>
                           </div>
                         </div>
-                        <p className="mt-1.5 text-base leading-snug text-secondary">
-                          {[
-                            worker.shift,
-                            attendanceCameraOptions.find(
-                              (option) => option.value === worker.camera,
-                            )?.label,
-                          ]
-                            .filter(Boolean)
-                            .join(" • ")}
-                        </p>
                       </div>
                     ))
                   )}

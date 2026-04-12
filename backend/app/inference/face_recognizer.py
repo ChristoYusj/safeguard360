@@ -66,7 +66,7 @@ class FaceRecognizer:
             "provider": "insightface" if self.available else "unavailable",
             "model": self.settings.FACE_MODEL,
             "message": (
-                "InsightFace is ready for embedding extraction."
+                "Face recognition embeddings are ready."
                 if self.available
                 else (
                     "InsightFace is not installed yet. Enrollment images can be "

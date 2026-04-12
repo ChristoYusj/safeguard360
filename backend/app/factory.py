@@ -69,6 +69,9 @@ async def frame_broadcaster():
                         "person_name": event.person_name,
                         "access_granted": event.access_granted,
                         "ppe_compliant": event.ppe_compliant,
+                        "ppe_status": event.ppe_status,
+                        "ppe_details": event.ppe_details,
+                        "review_reasons": event.review_reasons,
                     })
 
             await asyncio.sleep(0.02)

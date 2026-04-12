@@ -19,11 +19,36 @@ class ConnectionManager:
         await websocket.accept()
         self.live_connections.add(websocket)
         print(f"[WebSocketManager] Live client connected. Total: {len(self.live_connections)}")
-    
+        try:
+            from app.camera.manager import camera_manager
+
+            latest_frame = camera_manager.get_latest_frame()
+            if latest_frame:
+                await websocket.send_text(json.dumps({
+                    "type": "frame",
+                    "data": latest_frame,
+                }))
+        except Exception as e:
+            print(f"[WebSocketManager] Failed to send initial live frame: {e}")
+
     async def connect_events(self, websocket: WebSocket):
         await websocket.accept()
         self.events_connections.add(websocket)
         print(f"[WebSocketManager] Events client connected. Total: {len(self.events_connections)}")
+        try:
+            from app.camera.manager import camera_manager
+
+            state = camera_manager.get_state().__dict__.copy()
+            if camera_manager.mode == "driver":
+                state["driver"] = camera_manager.get_driver_state()
+            elif camera_manager.mode == "gate":
+                state["gate"] = camera_manager.get_gate_state()
+            await websocket.send_text(json.dumps({
+                "type": "status",
+                "camera": state,
+            }))
+        except Exception as e:
+            print(f"[WebSocketManager] Failed to send initial status: {e}")
     
     def disconnect_live(self, websocket: WebSocket):
         self.live_connections.discard(websocket)

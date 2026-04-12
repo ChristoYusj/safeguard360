@@ -6,7 +6,6 @@ import {
   enrollPersonWithMedia,
   getPersons,
   getRecognizerStatus,
-  updatePerson,
   updatePersonEnrollmentMedia,
 } from "../services/api";
 import {
@@ -60,9 +59,6 @@ function Enrollment() {
   const [isSaving, setIsSaving] = useState(false);
   const [editingPersonId, setEditingPersonId] = useState(null);
   const [editForm, setEditForm] = useState({
-    name: "",
-    employeeId: "",
-    shiftId: "day",
     mergeMode: "append",
   });
   const [editFiles, setEditFiles] = useState([]);
@@ -189,9 +185,6 @@ function Enrollment() {
   const resetEditState = () => {
     setEditingPersonId(null);
     setEditForm({
-      name: "",
-      employeeId: "",
-      shiftId: "day",
       mergeMode: "append",
     });
     setEditFiles([]);
@@ -209,9 +202,6 @@ function Enrollment() {
     setError("");
     setEditingPersonId(person.id);
     setEditForm({
-      name: person.name,
-      employeeId: person.employee_id || "",
-      shiftId: person.shift_id || "day",
       mergeMode: "append",
     });
     setEditFiles([]);
@@ -228,7 +218,7 @@ function Enrollment() {
     }
 
     if (matchedEnrolledPerson) {
-      setError("This worker is already enrolled. Use Edit Enrollment below to add more media.");
+      setError("This worker is already enrolled. Use Add Media below to upload more face samples.");
       return;
     }
 
@@ -277,31 +267,28 @@ function Enrollment() {
       return;
     }
 
-    if (!editForm.name.trim()) {
-      setError("Worker name is required.");
+    const editingPerson = persons.find((person) => person.id === editingPersonId);
+    if (!editingPerson) {
+      setError("This enrollment record is no longer available.");
+      return;
+    }
+
+    if (editFiles.length === 0) {
+      setError("Add new media files before updating the face enrollment.");
       return;
     }
 
     setIsUpdating(true);
     setError("");
     try {
-      if (editFiles.length > 0) {
-        await updatePersonEnrollmentMedia({
-          personId: editingPersonId,
-          name: editForm.name.trim(),
-          employeeId: editForm.employeeId.trim(),
-          shiftId: editForm.shiftId,
-          mergeMode: editForm.mergeMode,
-          files: editFiles,
-        });
-      } else {
-        await updatePerson(editingPersonId, {
-          name: editForm.name.trim(),
-          employee_id: editForm.employeeId.trim() || null,
-          shift_id: editForm.shiftId,
-          is_active: true,
-        });
-      }
+      await updatePersonEnrollmentMedia({
+        personId: editingPersonId,
+        name: editingPerson.name.trim(),
+        employeeId: editingPerson.employee_id?.trim() || "",
+        shiftId: editingPerson.shift_id || "day",
+        mergeMode: editForm.mergeMode,
+        files: editFiles,
+      });
 
       await loadData();
       resetEditState();
@@ -323,11 +310,6 @@ function Enrollment() {
         <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
           Worker Enrollment
         </h1>
-        <p className="mt-3 max-w-3xl text-sm text-secondary">
-          Use either 6 to 12 face photos from different angles or one 5 to 10 second
-          video where the worker slowly turns left and right. The backend now keeps a
-          compact multi-view embedding set for faster matching.
-        </p>
       </motion.section>
 
       {error ? (
@@ -358,8 +340,9 @@ function Enrollment() {
                       : "Enrollment storage active"}
                   </p>
                   <p className="mt-2 text-sm text-secondary">
-                    {recognizerStatus?.message ||
-                      "Loading recognition runtime status."}
+                    {recognizerStatus?.available
+                      ? "Recognition runtime is ready."
+                      : recognizerStatus?.message || "Loading recognition runtime status."}
                   </p>
                 </div>
                 <span
@@ -382,14 +365,10 @@ function Enrollment() {
                 <label className="block text-sm font-semibold text-primary">
                   Select saved worker
                 </label>
-                <p className="mt-1 text-sm text-secondary">
-                  Pull the worker name and badge from Settings so you do not type them
-                  again.
-                </p>
                 <select
                   value={selectedWorkerId}
                   onChange={handleSavedWorkerSelect}
-                  className="input mt-3 h-12"
+                  className="input h-12"
                 >
                   <option value="">Choose from attendance workers</option>
                   {savedWorkers.map((worker) => (
@@ -451,7 +430,7 @@ function Enrollment() {
                     </div>
                     <p className="mt-3 text-sm text-secondary">
                       {matchedEnrolledPerson
-                        ? "This worker already has an enrollment record below. Use Edit Enrollment if you want to add more media."
+                        ? "This worker already has a face record below. Use Add Media there when you want to upload more samples."
                         : "This enrollment will use the saved worker record exactly as shown above."}
                     </p>
                   </div>
@@ -472,8 +451,8 @@ function Enrollment() {
                         Enrollment media
                       </label>
                       <p className="mt-1 text-sm text-secondary">
-                        Recommended: one short video or several images covering frontal
-                        and side angles.
+                        Use either 6 to 12 face photos from different angles or one 5
+                        to 10 second video where the worker slowly turns left and right.
                       </p>
                       <input
                         ref={fileInputRef}
@@ -598,7 +577,7 @@ function Enrollment() {
                         }
                         className="btn btn-secondary h-10 px-4"
                       >
-                        {editingPersonId === person.id ? "Close Editor" : "Edit Enrollment"}
+                        {editingPersonId === person.id ? "Close Uploader" : "Add Media"}
                       </button>
                       <button
                         type="button"
@@ -606,7 +585,7 @@ function Enrollment() {
                         className="btn h-10 px-4 text-white"
                         style={{ backgroundColor: "var(--color-error)" }}
                       >
-                        Remove
+                        Remove Face Data
                       </button>
                     </div>
                   </div>
@@ -638,11 +617,7 @@ function Enrollment() {
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-primary">
-                            Update worker profile
-                          </p>
-                          <p className="mt-1 text-sm text-secondary">
-                            Append adds new angles to the existing face set. Replace
-                            rebuilds the worker from only the fresh upload.
+                            Update face enrollment
                           </p>
                         </div>
                         <span className="badge badge-info">
@@ -650,47 +625,7 @@ function Enrollment() {
                         </span>
                       </div>
 
-                      <input
-                        type="text"
-                        value={editForm.name}
-                        onChange={(event) =>
-                          setEditForm((current) => ({
-                            ...current,
-                            name: event.target.value,
-                          }))
-                        }
-                        placeholder="Worker name"
-                        className="input h-12"
-                      />
-                      <input
-                        type="text"
-                        value={editForm.employeeId}
-                        onChange={(event) =>
-                          setEditForm((current) => ({
-                            ...current,
-                            employeeId: event.target.value,
-                          }))
-                        }
-                        placeholder="Badge or employee ID"
-                        className="input h-12"
-                      />
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <select
-                          value={editForm.shiftId}
-                          onChange={(event) =>
-                            setEditForm((current) => ({
-                              ...current,
-                              shiftId: event.target.value,
-                            }))
-                          }
-                          className="input h-12"
-                        >
-                          {SHIFT_OPTIONS.map((shift) => (
-                            <option key={shift.id} value={shift.id}>
-                              {shift.label}
-                            </option>
-                          ))}
-                        </select>
+                      <div className="flex justify-end">
                         <select
                           value={editForm.mergeMode}
                           onChange={(event) =>
@@ -719,9 +654,6 @@ function Enrollment() {
                             <label className="block text-sm font-semibold text-primary">
                               New media
                             </label>
-                            <p className="mt-1 text-sm text-secondary">
-                              Leave this empty to save only the name, badge, or shift.
-                            </p>
                             <input
                               ref={editFileInputRef}
                               type="file"
@@ -757,7 +689,11 @@ function Enrollment() {
                               </p>
                             ) : null}
                           </div>
-                        ) : null}
+                        ) : (
+                          <p className="mt-3 text-sm text-secondary">
+                            No new media selected yet.
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap gap-2">
@@ -766,7 +702,7 @@ function Enrollment() {
                           disabled={isUpdating}
                           className="btn btn-primary h-12 px-4"
                         >
-                          {isUpdating ? "Saving..." : "Save Update"}
+                          {isUpdating ? "Saving..." : "Update Face Data"}
                         </button>
                         <button
                           type="button"

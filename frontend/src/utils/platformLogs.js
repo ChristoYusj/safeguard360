@@ -9,9 +9,6 @@ function createDefaultStore() {
     attendance: {
       sessions: [],
     },
-    gatePpe: {
-      sessions: [],
-    },
   };
 }
 
@@ -64,15 +61,6 @@ export function clearPlatformLogModule(moduleName) {
   if (moduleName === "attendance") {
     store.attendance = {
       ...(store.attendance || {}),
-      sessions: [],
-    };
-    safeWrite(store);
-    return;
-  }
-
-  if (moduleName === "gatePpe") {
-    store.gatePpe = {
-      ...(store.gatePpe || {}),
       sessions: [],
     };
     safeWrite(store);

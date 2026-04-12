@@ -10,6 +10,7 @@ import {
   decideAttendanceReview,
   getAttendance,
   getAttendanceGateMode,
+  getAttendancePpePolicy,
   getAttendanceReviews,
   getBackendWsBase,
   getCameraOwner,
@@ -20,16 +21,21 @@ import {
   setCameraMode,
   startCamera,
   stopCamera,
+  updateAttendancePpePolicy,
 } from "../services/api";
 import {
   AlertTriangleIcon,
-  BellIcon,
   CameraIcon,
   CheckCircleIcon,
   RefreshIcon,
   UsersIcon,
   VideoIcon,
 } from "../components/icons";
+import {
+  buildAttendanceSessionState,
+  getShiftIdForTimestamp,
+} from "../utils/attendanceSessions";
+import { readSessionOperator } from "../utils/sessionOperator";
 
 const SHIFT_BLOCKS = [
   {
@@ -114,6 +120,90 @@ function getGateReviewLabel(status) {
   return "Awaiting Match";
 }
 
+function normalizePpeDetails(details) {
+  return {
+    status: "not_evaluated",
+    required_items: [],
+    detected_items: [],
+    missing_items: [],
+    detector_confidences: {},
+    override_used: false,
+    override_reason_type: null,
+    detector_available: false,
+    detector_message: null,
+    ...(details || {}),
+  };
+}
+
+function formatPpeStatusLabel(details) {
+  const ppe = normalizePpeDetails(details);
+  if (ppe.status === "compliant") return "PPE Clear";
+  if (ppe.status === "non_compliant") return "PPE Missing";
+  if (ppe.status === "uncertain") return "PPE Review";
+  if (ppe.status === "unavailable") return "Detector Offline";
+  if (ppe.status === "skipped") return "PPE Skipped";
+  return null;
+}
+
+function getPpeBadgeClass(details) {
+  const ppe = normalizePpeDetails(details);
+  if (ppe.status === "compliant") return "badge badge-success";
+  if (ppe.status === "non_compliant" || ppe.status === "uncertain") {
+    return "badge badge-warning";
+  }
+  return "badge badge-info";
+}
+
+function formatReviewReasons(review) {
+  const reviewReasons = Array.isArray(review?.review_reasons)
+    ? review.review_reasons
+    : [];
+  const ppe = normalizePpeDetails(review?.ppe_details);
+  const labels = [];
+
+  if (reviewReasons.includes("face_confidence")) {
+    labels.push("Face confidence needs approval");
+  }
+  if (reviewReasons.includes("uncertain_ppe")) {
+    labels.push("PPE status is uncertain");
+  }
+  if (ppe.missing_items.length > 0) {
+    labels.push(`Missing ${ppe.missing_items.join(", ")}`);
+  }
+
+  return labels.length > 0 ? labels : ["Operator review required"];
+}
+
+function ToggleSwitch({ checked, disabled = false, ariaLabel, onClick }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={ariaLabel}
+      aria-checked={checked}
+      aria-disabled={disabled}
+      onClick={onClick}
+      className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full border p-1 transition-colors ${
+        checked
+          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]"
+          : "border-[var(--color-border-emphasis)] bg-[var(--color-bg-card)]"
+      } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+      disabled={disabled}
+    >
+      <motion.span
+        initial={false}
+        animate={{ x: checked ? 24 : 0 }}
+        transition={{
+          type: "spring",
+          stiffness: 500,
+          damping: 30,
+        }}
+        className="inline-block h-6 w-6 rounded-full bg-white shadow-md"
+      />
+    </button>
+  );
+}
+
 function formatEventTime(value) {
   if (!value) {
     return "--";
@@ -123,6 +213,52 @@ function formatEventTime(value) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatEventTimestamp(value) {
+  if (!value) {
+    return "--";
+  }
+
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatCameraSourceLabel(sourceType, sourceId) {
+  if (!sourceType && !sourceId) {
+    return "--";
+  }
+
+  if (sourceType === "webcam") {
+    return `Webcam ${sourceId ?? "--"}`;
+  }
+
+  if (sourceType === "ip_stream") {
+    return sourceId || "IP Stream";
+  }
+
+  if (sourceType === "video_file") {
+    return sourceId || "Video File";
+  }
+
+  return [sourceType, sourceId].filter(Boolean).join(":");
+}
+
+function formatLogMethodLabel(logMethod) {
+  if (logMethod === "MANUAL") return "Manual";
+  if (logMethod === "AUTO") return "Auto";
+  return "--";
+}
+
+function formatFaceMatchLabel(confidence) {
+  if (confidence == null) {
+    return "--";
+  }
+  return `${Math.round(confidence * 100)}%`;
 }
 
 function addMinutes(date, minutes) {
@@ -199,18 +335,6 @@ function getRelevantShiftWindow(shiftId, now = new Date()) {
   };
 }
 
-function getShiftIdForTimestamp(timestamp) {
-  if (!timestamp) {
-    return null;
-  }
-
-  const date = new Date(timestamp);
-  const hour = date.getHours();
-  if (hour >= 6 && hour < 14) return "day";
-  if (hour >= 14 && hour < 22) return "swing";
-  return "night";
-}
-
 function isRecordInShiftWindow(record, shiftWindow) {
   if (!record?.timestamp) {
     return false;
@@ -220,71 +344,36 @@ function isRecordInShiftWindow(record, shiftWindow) {
   return isDateInShiftWindow(recordTime, shiftWindow);
 }
 
-function buildWorkerNote(
-  person,
-  attendanceState,
-  latestRecord,
-  lastEntryRecord,
-  shiftWindow,
-  pendingReview,
-) {
-  const shiftLabel = getShiftLabel(shiftWindow.shiftId);
-
-  if (!person.has_embedding) {
-    return person.embedding_message || "Enrollment still needs usable face samples.";
+function getReviewShiftId(review, personsById) {
+  if (!review) {
+    return null;
   }
 
-  if (pendingReview) {
-    return `Low-confidence match at ${Math.round((pendingReview.confidence || 0) * 100)}%. Waiting for operator approval.`;
-  }
+  const assignedShiftId = review.person_id
+    ? personsById.get(review.person_id)?.shift_id || null
+    : null;
 
-  if (attendanceState === "held") {
-    return "Latest gate event needs manual review before attendance can be cleared.";
-  }
-
-  if (attendanceState === "verified") {
-    return `Checked in for ${shiftLabel} at ${formatEventTime(lastEntryRecord?.timestamp)}.`;
-  }
-
-  if (attendanceState === "checkedOut") {
-    return `Checked out from ${shiftLabel} at ${formatEventTime(latestRecord?.timestamp)}.`;
-  }
-
-  if (!shiftWindow.hasStarted) {
-    return `Expected once ${shiftLabel} opens at ${formatEventTime(shiftWindow.start)}.`;
-  }
-
-  return `Ready for gate scan during ${shiftLabel}.`;
+  return assignedShiftId || getShiftIdForTimestamp(review.timestamp || review.decided_at);
 }
 
 function buildWorkerRecords(
   persons,
-  attendanceRecords,
+  activeSessions,
   gateReviews,
   selectedSourceLabel,
   selectedShiftWindow,
   liveGateStatus,
   gateModeEnabled,
+  gateDirectionMode,
 ) {
-  const recordsByPersonId = new Map();
   const pendingReviewsByPersonId = new Map();
-  const now = new Date();
-
-  attendanceRecords.forEach((record) => {
-    if (!record.person_id || !isRecordInShiftWindow(record, selectedShiftWindow)) {
-      return;
-    }
-
-    const currentRecords = recordsByPersonId.get(record.person_id) || [];
-    currentRecords.push(record);
-    recordsByPersonId.set(record.person_id, currentRecords);
-  });
+  const personsById = new Map(persons.map((person) => [person.id, person]));
 
   gateReviews.forEach((review) => {
     if (
       review.status !== "PENDING" ||
       !review.person_id ||
-      !isRecordInShiftWindow(review, selectedShiftWindow)
+      getReviewShiftId(review, personsById) !== selectedShiftWindow.shiftId
     ) {
       return;
     }
@@ -295,12 +384,16 @@ function buildWorkerRecords(
     }
   });
 
-  return persons.map((person) => {
-    const personRecords = recordsByPersonId.get(person.id) || [];
-    const pendingReview = pendingReviewsByPersonId.get(person.id) || null;
+  return activeSessions.map((session) => {
+    const person = session.personId ? personsById.get(session.personId) : null;
+    const pendingReview = session.personId
+      ? pendingReviewsByPersonId.get(session.personId) || null
+      : null;
+    const allowLiveRescan = gateDirectionMode === "EXIT";
     const liveGateApplies =
+      allowLiveRescan &&
       Boolean(gateModeEnabled) &&
-      liveGateStatus?.person_id === person.id &&
+      liveGateStatus?.person_id === session.personId &&
       [
         "matching",
         "possible_match",
@@ -318,52 +411,44 @@ function buildWorkerRecords(
       !(liveGateApplies && liveGateStatus?.match_status === "confirmed_match")
         ? pendingReview
         : null;
-    const latestRecord = personRecords[0];
-    const lastEntryRecord =
-      personRecords.find(
-        (record) => record.direction === "ENTRY" && record.access_granted,
-      ) || null;
+    const lastEntryRecord = session.checkIn || null;
+    const effectivePpeDetails = liveGateApplies
+      ? normalizePpeDetails(liveGateStatus?.ppe_details)
+      : effectivePendingReview
+        ? normalizePpeDetails(effectivePendingReview.ppe_details)
+        : normalizePpeDetails(lastEntryRecord?.ppe_details);
     const isHeld =
       Boolean(effectivePendingReview) ||
       (liveGateApplies &&
         ["review_required", "possible_match", "not_checked_in"].includes(
           liveGateStatus?.match_status,
-        )) ||
-      (Boolean(latestRecord) &&
-        (!latestRecord.access_granted || !latestRecord.ppe_compliant));
-    const isVerified =
-      Boolean(latestRecord) &&
-      latestRecord.direction === "ENTRY" &&
-      latestRecord.access_granted;
-    const isCheckedOut =
-      Boolean(latestRecord) &&
-      latestRecord.direction === "EXIT" &&
-      latestRecord.access_granted;
-    const attendanceState = isHeld
-      ? "held"
-      : isVerified
-        ? "verified"
-        : isCheckedOut
-          ? "checkedOut"
-          : "expected";
+        ));
+    const attendanceState = isHeld ? "held" : "verified";
+    const shiftLabel = getShiftLabel(
+      session.shiftId || person?.shift_id || selectedShiftWindow.shiftId,
+    );
+    const manualOverrideLabel = session.hasManualOverride
+      ? ` Manual override used during ${session.manualOverrideDirections.join(" and ")}.`
+      : "";
+    const note = effectivePendingReview
+      ? `${formatReviewReasons(effectivePendingReview).join(" • ")}. Waiting for operator approval.`
+      : `Checked in for ${shiftLabel} at ${formatEventTime(lastEntryRecord?.timestamp)}.${manualOverrideLabel}`;
 
     return {
-      id: person.id,
-      shiftId: person.shift_id || null,
-      name: person.name,
-      role: person.employee_id || "Enrolled worker",
-      company: person.shift_id
-        ? `${getShiftLabel(person.shift_id)} assigned`
+      id: session.personId || session.id,
+      shiftId: session.shiftId || person?.shift_id || null,
+      name: session.personName || person?.name || "Unknown worker",
+      role: session.employeeId || person?.employee_id || "Enrolled worker",
+      company: session.shiftId
+        ? `${getShiftLabel(session.shiftId)} assigned`
         : "No shift assigned",
       attendanceState,
       matchState:
         liveGateApplies && liveGateStatus?.match_status === "confirmed_match"
           ? "matched"
           : effectivePendingReview
-        ? "review"
-        : latestRecord?.access_granted
-          ? "matched"
-          : "pending",
+          ? "review"
+          : "matched",
       cameraSource: selectedSourceLabel,
       lastCheckIn: lastEntryRecord?.timestamp
         ? formatEventTime(lastEntryRecord.timestamp)
@@ -373,39 +458,16 @@ function buildWorkerRecords(
           ? liveConfidence
           : effectivePendingReview?.confidence != null
             ? Math.round(effectivePendingReview.confidence * 100)
-            : latestRecord?.confidence != null
-              ? Math.round(latestRecord.confidence * 100)
+            : lastEntryRecord?.confidence != null
+              ? Math.round(lastEntryRecord.confidence * 100)
               : null,
       pendingReview: effectivePendingReview,
-      riskLabel:
-        liveGateApplies && liveGateStatus?.message
-          ? liveGateStatus.message
-          : buildWorkerNote(
-        person,
-        attendanceState,
-        latestRecord,
-        lastEntryRecord,
-        selectedShiftWindow,
-        effectivePendingReview,
-      ),
+      hasManualOverride: session.hasManualOverride,
+      riskLabel: liveGateApplies && liveGateStatus?.message ? liveGateStatus.message : note,
+      ppeDetails: effectivePpeDetails,
+      ppeStatusLabel: formatPpeStatusLabel(effectivePpeDetails),
     };
   });
-}
-
-function buildManualOverrideEntries(gateReviews) {
-  return gateReviews
-    .filter((review) => review.status === "APPROVED" || review.status === "DENIED")
-    .map((review) => ({
-      id: review.id,
-      shiftId: getShiftIdForTimestamp(review.timestamp),
-      workerName: review.person_name || "Unknown worker",
-      cameraSource: "Gate review",
-      triggeredBy: review.decided_by || "Authorized operator",
-      time: formatEventTime(review.decided_at || review.timestamp),
-      reason: review.decision_note || "Low-confidence recognition required operator review.",
-      decision: review.status === "APPROVED" ? "Accepted" : "Denied",
-      confidence: review.confidence != null ? Math.round(review.confidence * 100) : null,
-    }));
 }
 
 function StatCard({ icon: Icon, label, value, helper, tone = "accent" }) {
@@ -475,8 +537,15 @@ function Attendance() {
   const [isStarting, setIsStarting] = useState(false);
   const [isChangingRecognitionMode, setIsChangingRecognitionMode] = useState(false);
   const [isChangingGateDirection, setIsChangingGateDirection] = useState(false);
+  const [isChangingPpePolicy, setIsChangingPpePolicy] = useState(false);
+  const [ppePolicy, setPpePolicy] = useState({
+    require_helmet: true,
+    require_vest: true,
+    deny_non_compliant_entry: true,
+  });
   const [liveFps, setLiveFps] = useState(0);
   const [decisionInFlightId, setDecisionInFlightId] = useState(null);
+  const sessionOperator = readSessionOperator();
 
   const liveWsRef = useRef(null);
   const eventsWsRef = useRef(null);
@@ -491,6 +560,11 @@ function Attendance() {
   const lastFrameTsRef = useRef(null);
   const smoothedFpsRef = useRef(0);
   const lastFpsUiUpdateRef = useRef(0);
+  const lastEnabledPpePolicyRef = useRef({
+    require_helmet: true,
+    require_vest: true,
+    deny_non_compliant_entry: true,
+  });
 
   const syncGateStateFromCamera = (nextState) => {
     if (nextState?.mode === "gate" && nextState?.gate) {
@@ -666,6 +740,24 @@ function Attendance() {
         }
       });
 
+    getAttendancePpePolicy()
+      .then((policy) => {
+        if (cancelled) return;
+        setPpePolicy(policy);
+        if (policy?.require_helmet || policy?.require_vest || policy?.deny_non_compliant_entry) {
+          lastEnabledPpePolicyRef.current = {
+            require_helmet: Boolean(policy.require_helmet),
+            require_vest: Boolean(policy.require_vest),
+            deny_non_compliant_entry: Boolean(policy.deny_non_compliant_entry),
+          };
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          console.error("[Attendance] Failed to load PPE policy", loadError);
+        }
+      });
+
     return () => {
       cancelled = true;
     };
@@ -707,23 +799,23 @@ function Attendance() {
     SHIFT_BLOCKS.find((shift) => shift.id === selectedShiftId) || SHIFT_BLOCKS[0];
   const selectedShiftWindow = getRelevantShiftWindow(selectedShift.id);
   const gateModeEnabled = Boolean(cameraState?.active) && cameraState?.mode === "gate";
-  const personnel = buildWorkerRecords(
-    personsData,
+  const personsById = new Map(personsData.map((person) => [person.id, person]));
+  const scopedGateReviews = gateReviews.filter((review) =>
+    review.status === "PENDING"
+      ? getReviewShiftId(review, personsById) === selectedShift.id
+      : isRecordInShiftWindow(
+          { timestamp: review.timestamp || review.decided_at },
+          selectedShiftWindow,
+        ),
+  );
+  const { activeSessions, rosterCards } = buildAttendanceSessionState({
+    persons: personsData,
     attendanceRecords,
     gateReviews,
-    selectedSourceLabel,
-    selectedShiftWindow,
-    gateStatus,
-    gateModeEnabled,
-  );
+  });
   const pendingReviews = gateModeEnabled
-    ? gateReviews
-        .filter(
-          (review) =>
-            review.status === "PENDING" &&
-            (!getShiftIdForTimestamp(review.timestamp) ||
-              getShiftIdForTimestamp(review.timestamp) === selectedShift.id),
-        )
+    ? scopedGateReviews
+        .filter((review) => review.status === "PENDING")
         .filter(
           (review) =>
             !(
@@ -746,54 +838,75 @@ function Attendance() {
           return review;
         })
     : [];
-  const shiftWorkers = personnel.filter(
-    (worker) => !worker.shiftId || worker.shiftId === selectedShift.id,
+  const rosterEntries = rosterCards.filter(
+    (card) => !card.shiftId || card.shiftId === selectedShift.id,
   );
-  const onSiteCount = shiftWorkers.filter(
-    (worker) => worker.attendanceState === "verified",
-  ).length;
-  const checkedOutCount = shiftWorkers.filter(
-    (worker) => worker.attendanceState === "checkedOut",
-  ).length;
-  const flaggedWorkers = shiftWorkers.filter(
-    (worker) =>
-      worker.pendingReview,
+  const registeredWorkers = personsData.filter(
+    (person) =>
+      person.is_active !== false &&
+      (!person.shift_id || person.shift_id === selectedShift.id),
   );
-  const overrideEntries = buildManualOverrideEntries(gateReviews).filter(
-    (entry) => !entry.shiftId || entry.shiftId === selectedShift.id,
+  const activeShiftSessions = activeSessions.filter(
+    (session) => !session.shiftId || session.shiftId === selectedShift.id,
   );
-  const gateDirectionLabel =
-    gateDirectionMode === "EXIT" ? "Check-Out Lane" : "Check-In Lane";
-  const gateDirectionHelper =
-    gateDirectionMode === "EXIT"
-      ? "Exit lane only considers workers who are still on site and not yet checked out."
-      : "Entry lane accepts enrolled workers and logs arrivals.";
-  const intakeStatus =
-    flaggedWorkers.length > 0
-      ? "Review Needed"
-      : onSiteCount > 0
-        ? "Active"
-        : "Awaiting arrivals";
-  const intakeStatusBadgeClass =
-    flaggedWorkers.length > 0
-      ? "badge badge-warning"
-      : onSiteCount > 0
-        ? "badge badge-success"
-        : "badge badge-info";
+  const activeSessionPersonIds = new Set(
+    activeSessions
+      .map((session) => session.personId)
+      .filter(Boolean),
+  );
+  const redundantEntryScanActive =
+    gateDirectionMode === "ENTRY" &&
+    gateStatus?.person_id &&
+    activeSessionPersonIds.has(gateStatus.person_id);
+  const globalCheckedInCount = activeSessions.length;
+  const preStartDirectionMode = globalCheckedInCount > 0 ? "EXIT" : "ENTRY";
+  const modeLocked = Boolean(cameraState?.active) || isStarting;
+  const canUseCheckIn = !modeLocked && preStartDirectionMode === "ENTRY";
+  const canUseCheckOut = !modeLocked && preStartDirectionMode === "EXIT";
+  const onSiteCount = activeShiftSessions.length;
+  const checkInCandidateCount = Math.max(registeredWorkers.length - onSiteCount, 0);
   const onSiteValue =
-    shiftWorkers.length > 0 ? `${onSiteCount}/${shiftWorkers.length}` : "No records";
-  const checkedOutValue = shiftWorkers.length > 0 ? `${checkedOutCount}` : "No exits";
-  const canToggleGateMode = Boolean(cameraState?.active) && !isChangingRecognitionMode;
+    registeredWorkers.length > 0
+      ? `${onSiteCount}/${registeredWorkers.length}`
+      : "No records";
+  const ppeSystemEnabled = Boolean(
+    ppePolicy?.require_helmet ||
+      ppePolicy?.require_vest ||
+      ppePolicy?.deny_non_compliant_entry,
+  );
+  const canToggleGateMode =
+    Boolean(cameraState?.active) &&
+    hasLiveFrame &&
+    !isChangingRecognitionMode &&
+    !isStarting;
   const recognitionStatusDetail = !cameraState?.active
-    ? "Start the feed first, then enable recognition."
+    ? null
+    : !hasLiveFrame
+      ? "Waiting for a stable live frame before recognition can be enabled."
     : !gateModeEnabled
-      ? "Recognition is paused while the live camera stays available."
+      ? null
+      : redundantEntryScanActive
+        ? "Workers already checked in are ignored until Check-Out mode is enabled."
       : gateStatus?.message ||
         (gateDirectionMode === "EXIT"
-          ? "Recognition is scanning checked-in workers for checkout."
-          : "Recognition is scanning enrolled workers for check-in.");
+        ? "Recognition is scanning checked-in workers for checkout."
+        : "Recognition is scanning enrolled workers for check-in.");
+  const livePpeDetails = normalizePpeDetails(gateStatus?.ppe_details);
+  const livePpeSummary = !ppeSystemEnabled
+    ? null
+    : !cameraState?.active
+    ? null
+    : !gateModeEnabled
+      ? null
+      : gateDirectionMode === "EXIT"
+        ? null
+        : gateStatus?.ppe_message ||
+          livePpeDetails.detector_message ||
+          null;
   const liveHealthLabel = cameraState?.active
-    ? gateModeEnabled
+    ? !hasLiveFrame
+      ? "Waiting for video"
+      : gateModeEnabled
       ? "Recognition active"
       : "Live camera, matching paused"
     : "Camera offline";
@@ -808,14 +921,52 @@ function Attendance() {
       : null;
 
   useEffect(() => {
+    if (
+      cameraState?.active ||
+      isStarting ||
+      isChangingGateDirection ||
+      gateDirectionMode === preStartDirectionMode
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPreStartDirection = async () => {
+      try {
+        const payload = await updateAttendanceGateMode(preStartDirectionMode);
+        if (!cancelled) {
+          setGateDirectionMode(payload.direction_mode);
+        }
+      } catch (syncError) {
+        if (!cancelled) {
+          console.error("[Attendance] Failed to sync pre-start gate direction", syncError);
+        }
+      }
+    };
+
+    syncPreStartDirection();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    cameraState?.active,
+    gateDirectionMode,
+    isChangingGateDirection,
+    isStarting,
+    preStartDirectionMode,
+  ]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const loadAttendanceData = async () => {
       try {
         const [persons, attendanceRecords, reviews] = await Promise.all([
           getPersons(),
-          getAttendance(),
-          getAttendanceReviews(),
+          getAttendance({ limit: 500 }),
+          getAttendanceReviews("all", { limit: 500 }),
         ]);
 
         if (cancelled) {
@@ -856,7 +1007,7 @@ function Attendance() {
     }, 2500);
 
     return () => window.clearTimeout(reconnectTimer);
-  }, [cameraState?.active, hasLiveFrame]);
+  }, [cameraState?.active, hasLiveFrame, streamSession]);
 
   const refreshSources = async () => {
     try {
@@ -870,31 +1021,80 @@ function Attendance() {
     }
   };
 
+  const waitForLiveFrame = (timeoutMs = 3500) =>
+    new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+
+      const checkReady = () => {
+        if (hasLiveFrameRef.current) {
+          resolve();
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          reject(new Error("Camera feed started but no live frames were received."));
+          return;
+        }
+
+        window.setTimeout(checkReady, 120);
+      };
+
+      checkReady();
+    });
+
   const handleStart = async () => {
     const fallbackSourceId = selectedSourceId || "webcam:0";
     const parsed = parseSourceId(fallbackSourceId);
+    const targetDirectionMode = preStartDirectionMode;
 
     setError(null);
     setIsStarting(true);
     try {
-      setStreamSession((current) => current + 1);
-      setHasLiveFrame(false);
-      hasLiveFrameRef.current = false;
-      pendingFrameSrcRef.current = "";
-      lastFrameTsRef.current = null;
-      smoothedFpsRef.current = 0;
-      lastFpsUiUpdateRef.current = 0;
-      if (liveImageRef.current) {
-        liveImageRef.current.removeAttribute("src");
+      if (gateDirectionMode !== targetDirectionMode) {
+        const payload = await updateAttendanceGateMode(targetDirectionMode);
+        setGateDirectionMode(payload.direction_mode);
       }
-      const state = await startCamera(
-        parsed.type,
-        parsed.id,
-        cameraOwnerRef.current,
-      );
-      applyCameraState(state);
-      if (state?.source_type && state?.source_id != null) {
-        setSelectedSourceId(`${state.source_type}:${state.source_id}`);
+
+      let started = false;
+      let lastError = null;
+
+      for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
+        try {
+          setStreamSession((current) => current + 1);
+          setHasLiveFrame(false);
+          hasLiveFrameRef.current = false;
+          pendingFrameSrcRef.current = "";
+          lastFrameTsRef.current = null;
+          smoothedFpsRef.current = 0;
+          lastFpsUiUpdateRef.current = 0;
+          if (liveImageRef.current) {
+            liveImageRef.current.removeAttribute("src");
+          }
+
+          const state = await startCamera(
+            parsed.type,
+            parsed.id,
+            cameraOwnerRef.current,
+          );
+          applyCameraState(state);
+          if (state?.source_type && state?.source_id != null) {
+            setSelectedSourceId(`${state.source_type}:${state.source_id}`);
+          }
+
+          await waitForLiveFrame(3600);
+          started = true;
+        } catch (cameraError) {
+          lastError = cameraError;
+          try {
+            await stopCamera(cameraOwnerRef.current);
+          } catch {
+            // Ignore cleanup errors between startup retries.
+          }
+        }
+      }
+
+      if (!started) {
+        throw lastError || new Error("Failed to start a stable live feed.");
       }
     } catch (cameraError) {
       setError(cameraError.message || "Failed to start gate camera.");
@@ -936,6 +1136,11 @@ function Attendance() {
       return;
     }
 
+    if (!hasLiveFrame && !gateModeEnabled) {
+      setError("Wait for the live feed to stabilize before enabling recognition mode.");
+      return;
+    }
+
     const nextMode = gateModeEnabled ? "idle" : "gate";
 
     try {
@@ -966,6 +1171,20 @@ function Attendance() {
       return;
     }
 
+    if (cameraState?.active || isStarting) {
+      setError("Stop the active feed before changing between Check-In and Check-Out mode.");
+      return;
+    }
+
+    if (directionMode !== preStartDirectionMode) {
+      setError(
+        preStartDirectionMode === "EXIT"
+          ? "Check-Out is the only available mode because workers are already checked in."
+          : "Check-In is the only available mode because no workers are currently checked in.",
+      );
+      return;
+    }
+
     try {
       setError(null);
       setIsChangingGateDirection(true);
@@ -991,15 +1210,60 @@ function Attendance() {
     try {
       setError(null);
       setDecisionInFlightId(reviewId);
+      setGateReviews((current) =>
+        current.map((review) =>
+          review.id === reviewId
+            ? {
+                ...review,
+                status: decision,
+                decided_by: sessionOperator.email || "Authorized operator",
+                decided_at: new Date().toISOString(),
+              }
+            : review,
+        ),
+      );
       await decideAttendanceReview(reviewId, {
         decision,
-        decided_by: "Authorized operator",
+        decided_by: sessionOperator.email || "Authorized operator",
       });
       setAttendanceRefreshTick((current) => current + 1);
     } catch (decisionError) {
+      setAttendanceRefreshTick((current) => current + 1);
       setError(decisionError.message || "Failed to resolve gate review.");
     } finally {
       setDecisionInFlightId(null);
+    }
+  };
+
+  const handleTogglePpeSystem = async () => {
+    const nextPolicy = ppeSystemEnabled
+      ? {
+          require_helmet: false,
+          require_vest: false,
+          deny_non_compliant_entry: false,
+        }
+      : lastEnabledPpePolicyRef.current;
+
+    try {
+      setError(null);
+      setIsChangingPpePolicy(true);
+      const updatedPolicy = await updateAttendancePpePolicy(nextPolicy);
+      setPpePolicy(updatedPolicy);
+      if (
+        updatedPolicy?.require_helmet ||
+        updatedPolicy?.require_vest ||
+        updatedPolicy?.deny_non_compliant_entry
+      ) {
+        lastEnabledPpePolicyRef.current = {
+          require_helmet: Boolean(updatedPolicy.require_helmet),
+          require_vest: Boolean(updatedPolicy.require_vest),
+          deny_non_compliant_entry: Boolean(updatedPolicy.deny_non_compliant_entry),
+        };
+      }
+    } catch (policyError) {
+      setError(policyError.message || "Failed to change PPE system.");
+    } finally {
+      setIsChangingPpePolicy(false);
     }
   };
 
@@ -1053,44 +1317,6 @@ function Attendance() {
             ))}
           </div>
         </motion.header>
-
-        <motion.section
-          initial="hidden"
-          animate="visible"
-          className="mb-8 grid gap-5 md:grid-cols-2 2xl:grid-cols-4"
-        >
-          <motion.div custom={0} variants={cardVariants}>
-            <StatCard
-              icon={UsersIcon}
-              label="On Site"
-              value={onSiteValue}
-            />
-          </motion.div>
-          <motion.div custom={1} variants={cardVariants}>
-            <StatCard
-              icon={CheckCircleIcon}
-              label="Checked Out"
-              value={checkedOutValue}
-              tone="success"
-            />
-          </motion.div>
-          <motion.div custom={2} variants={cardVariants}>
-            <StatCard
-              icon={AlertTriangleIcon}
-              label="Flagged"
-              value={`${flaggedWorkers.length}`}
-              tone="warning"
-            />
-          </motion.div>
-          <motion.div custom={3} variants={cardVariants}>
-            <StatCard
-              icon={BellIcon}
-              label="Manual Override"
-              value={`${overrideEntries.length}`}
-              tone="info"
-            />
-          </motion.div>
-        </motion.section>
 
         <AnimatePresence>
           {displayError && (
@@ -1164,10 +1390,6 @@ function Attendance() {
                         <p className="text-lg font-semibold text-primary">
                           Gate camera standing by
                         </p>
-                        <p className="mt-2 text-sm leading-relaxed text-secondary">
-                          Start the intake feed to verify worker attendance on the
-                          selected camera.
-                        </p>
                       </div>
                     </div>
                   ) : null}
@@ -1216,42 +1438,37 @@ function Attendance() {
                           <button
                             type="button"
                             onClick={() => handleGateDirectionChange("ENTRY")}
-                            disabled={isChangingGateDirection}
+                            disabled={isChangingGateDirection || !canUseCheckIn}
                             className={`rounded-2xl border px-4 py-3 text-left transition-all ${
                               gateDirectionMode === "ENTRY"
                                 ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary-muted)]"
                                 : "border-default bg-card hover:border-[var(--color-border-emphasis)]"
-                            } ${isChangingGateDirection ? "opacity-60" : ""}`}
+                            } ${isChangingGateDirection || !canUseCheckIn ? "opacity-60" : ""}`}
                           >
                             <p className="text-sm font-semibold text-primary">Check-In</p>
-                            <p className="mt-1 text-xs text-secondary">
-                              Recognize any enrolled worker entering the site.
-                            </p>
                           </button>
                           <button
                             type="button"
                             onClick={() => handleGateDirectionChange("EXIT")}
-                            disabled={isChangingGateDirection}
+                            disabled={isChangingGateDirection || !canUseCheckOut}
                             className={`rounded-2xl border px-4 py-3 text-left transition-all ${
                               gateDirectionMode === "EXIT"
                                 ? "border-[var(--color-warning)] bg-[var(--color-warning-muted)]"
                                 : "border-default bg-card hover:border-[var(--color-border-emphasis)]"
-                            } ${isChangingGateDirection ? "opacity-60" : ""}`}
+                            } ${isChangingGateDirection || !canUseCheckOut ? "opacity-60" : ""}`}
                           >
                             <p className="text-sm font-semibold text-primary">Check-Out</p>
-                            <p className="mt-1 text-xs text-secondary">
-                              Only workers currently on site are considered for exit.
-                            </p>
                           </button>
                         </div>
-                        <div className="rounded-xl border border-default bg-[var(--color-bg-surface)] px-4 py-3">
-                          <p className="text-sm font-semibold text-primary">
-                            {gateDirectionLabel}
+                        {cameraState?.active ? (
+                          <p className="text-sm text-secondary">
+                            {`Feed is running. ${gateDirectionMode === "EXIT" ? "Check-Out" : "Check-In"} mode is locked until the feed is stopped.`}
                           </p>
-                          <p className="mt-1 text-sm text-secondary">
-                            {gateDirectionHelper}
+                        ) : preStartDirectionMode !== "EXIT" ? (
+                          <p className="text-sm text-secondary">
+                            No workers are currently checked in, so only Check-In mode is available before start.
                           </p>
-                        </div>
+                        ) : null}
                       </div>
                       <select
                         value={selectedSourceId}
@@ -1302,9 +1519,6 @@ function Attendance() {
                           <p className="text-base font-semibold text-primary">
                             Recognition Mode
                           </p>
-                          <p className="mt-1 text-sm text-secondary">
-                            {recognitionStatusDetail}
-                          </p>
                         </div>
                         <div className="flex items-center gap-3">
                           <span
@@ -1314,57 +1528,83 @@ function Attendance() {
                           >
                             {gateModeEnabled ? "Enabled" : "Disabled"}
                           </span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-label="Toggle recognition mode"
-                            aria-checked={gateModeEnabled}
-                            aria-disabled={!canToggleGateMode}
-                            onClick={handleToggleGateMode}
-                            className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full border p-1 transition-colors ${
-                              gateModeEnabled
-                                ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]"
-                                : "border-[var(--color-border-emphasis)] bg-[var(--color-bg-card)]"
-                            } ${canToggleGateMode ? "" : "cursor-not-allowed opacity-60"}`}
+                          <ToggleSwitch
+                            checked={gateModeEnabled}
                             disabled={!canToggleGateMode}
-                          >
-                            <motion.span
-                              initial={false}
-                              animate={{ x: gateModeEnabled ? 24 : 0 }}
-                              transition={{
-                                type: "spring",
-                                stiffness: 500,
-                                damping: 30,
-                              }}
-                              className="inline-block h-6 w-6 rounded-full bg-white shadow-md"
-                            />
-                          </button>
+                            ariaLabel="Toggle recognition mode"
+                            onClick={handleToggleGateMode}
+                          />
                         </div>
                       </div>
+                      {recognitionStatusDetail ? (
+                        <p className="mt-1 text-sm text-secondary">
+                          {recognitionStatusDetail}
+                        </p>
+                      ) : null}
                     </div>
 
                     <div className="grid gap-4">
                       <div className="rounded-2xl border border-default bg-[var(--color-bg-surface)] p-4">
+                        <StatCard
+                          icon={UsersIcon}
+                          label="On Site"
+                          value={onSiteValue}
+                          helper={
+                            registeredWorkers.length > 0
+                              ? `${checkInCandidateCount} available for check-in`
+                              : "No workers enrolled yet"
+                          }
+                        />
+                      </div>
+
+                      <div className="rounded-2xl border border-default bg-[var(--color-bg-surface)] p-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
-                            <p className="eyebrow mb-2">Intake Status</p>
                             <p className="text-base font-semibold text-primary">
-                              {intakeStatus}
+                              PPE System
                             </p>
-                            <p className="mt-1 text-sm text-secondary">
-                              {flaggedWorkers.length > 0
-                                ? "One or more workers need attendance review for this shift."
-                                : "Recognition is ready to confirm arrivals and departures."}
-                            </p>
+                            {livePpeSummary ? (
+                              <p className="mt-1 text-sm text-secondary">
+                                {livePpeSummary}
+                              </p>
+                            ) : null}
                           </div>
-                          <span className={intakeStatusBadgeClass}>
-                            {flaggedWorkers.length > 0
-                              ? `${flaggedWorkers.length} flagged`
-                              : onSiteCount > 0
-                                ? `${onSiteCount} on site`
-                                : "Waiting"}
-                          </span>
+                          <div className="flex items-center gap-3">
+                            <span
+                              className={
+                                ppeSystemEnabled ? "badge badge-success" : "badge badge-info"
+                              }
+                            >
+                              {ppeSystemEnabled ? "Enabled" : "Disabled"}
+                            </span>
+                            <ToggleSwitch
+                              checked={ppeSystemEnabled}
+                              disabled={isChangingPpePolicy}
+                              ariaLabel="Toggle PPE system"
+                              onClick={handleTogglePpeSystem}
+                            />
+                          </div>
                         </div>
+                        {ppeSystemEnabled ? (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {formatPpeStatusLabel(livePpeDetails) ? (
+                              <span className={getPpeBadgeClass(livePpeDetails)}>
+                                {formatPpeStatusLabel(livePpeDetails)}
+                              </span>
+                            ) : null}
+                            {(livePpeDetails.required_items || []).map((item) => {
+                              const isDetected = (livePpeDetails.detected_items || []).includes(item);
+                              return (
+                                <span
+                                  key={item}
+                                  className={isDetected ? "badge badge-success" : "badge badge-warning"}
+                                >
+                                  {isDetected ? `${item} ok` : `${item} missing`}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1388,62 +1628,107 @@ function Attendance() {
                     </h2>
                   </div>
                 </div>
-                <span className="badge badge-accent">{shiftWorkers.length} records</span>
+                <span className="badge badge-accent">{rosterEntries.length} workers</span>
               </div>
 
               <div className="panel__content">
-                {shiftWorkers.length > 0 ? (
+                {rosterEntries.length > 0 ? (
                   <div className="grid gap-4">
-                    {shiftWorkers.map((worker) => (
+                    {rosterEntries.map((row) => (
                       <article
-                        key={worker.id}
+                        key={row.id}
                         className="rounded-2xl border border-default bg-[var(--color-bg-surface)] p-5"
                       >
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <h3 className="text-lg font-semibold text-primary">
-                              {worker.name}
+                              {row.personName}
                             </h3>
                             <p className="mt-1 text-sm text-secondary">
-                              {[worker.role, worker.company].filter(Boolean).join(" · ")}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <span className={getAttendanceTone(worker)}>
-                              {getAttendanceLabel(worker)}
-                            </span>
-                            <span className={getGateReviewClass(worker.matchState)}>
-                              {getGateReviewLabel(worker.matchState)}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="mt-5 grid gap-4 sm:grid-cols-3">
-                          <div>
-                            <p className="eyebrow mb-1.5">Camera</p>
-                            <p className="text-sm font-semibold text-primary">
-                              {worker.cameraSource || selectedSourceLabel}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="eyebrow mb-1.5">Check-In</p>
-                            <p className="text-sm font-semibold text-primary">
-                              {worker.lastCheckIn || "--"}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="eyebrow mb-1.5">Face Match</p>
-                            <p className="text-sm font-semibold text-primary">
-                              {worker.confidence ? `${worker.confidence}%` : "Pending"}
+                              {[row.employeeId, getShiftLabel(row.shiftId || selectedShift.id)]
+                                .filter(Boolean)
+                                .join(" · ")}
                             </p>
                           </div>
                         </div>
 
-                        <div className="mt-5 rounded-xl border border-default bg-card px-4 py-3">
-                          <p className="eyebrow mb-1.5">Access Note</p>
-                          <p className="text-sm font-medium text-primary">
-                            {worker.riskLabel || "No notes yet."}
-                          </p>
+                        <div className="mt-5 space-y-4">
+                          {[
+                            {
+                              key: "check-in",
+                              label: "Check-In",
+                              tone: "badge badge-success",
+                              event: row.latestCheckIn,
+                            },
+                            {
+                              key: "check-out",
+                              label: "Check-Out",
+                              tone: "badge badge-warning",
+                              event: row.latestCheckOut,
+                            },
+                          ].map((section) => (
+                            <div
+                              key={section.key}
+                              className="rounded-xl border border-default bg-card px-4 py-3"
+                            >
+                              <div className="mb-4 flex flex-wrap items-center gap-2">
+                                <span className={section.tone}>{section.label}</span>
+                                {section.event ? (
+                                  <span className="badge badge-info">
+                                    {formatLogMethodLabel(section.event.logMethod)}
+                                  </span>
+                                ) : null}
+                                {section.event &&
+                                formatPpeStatusLabel(section.event.ppeDetails) ? (
+                                  <span className={getPpeBadgeClass(section.event.ppeDetails)}>
+                                    {formatPpeStatusLabel(section.event.ppeDetails)}
+                                  </span>
+                                ) : null}
+                              </div>
+
+                              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                                <div>
+                                  <p className="eyebrow mb-1.5">Timestamp</p>
+                                  <p className="text-sm font-semibold text-primary">
+                                    {formatEventTimestamp(section.event?.timestamp)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="eyebrow mb-1.5">Camera</p>
+                                  <p className="text-sm font-semibold text-primary">
+                                    {formatCameraSourceLabel(
+                                      section.event?.cameraSourceType,
+                                      section.event?.cameraSourceId,
+                                    )}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="eyebrow mb-1.5">Face Match</p>
+                                  <p className="text-sm font-semibold text-primary">
+                                    {formatFaceMatchLabel(section.event?.confidence)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="eyebrow mb-1.5">Log Method</p>
+                                  <p className="text-sm font-semibold text-primary">
+                                    {formatLogMethodLabel(section.event?.logMethod)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="eyebrow mb-1.5">PPE</p>
+                                  {formatPpeStatusLabel(section.event?.ppeDetails) ? (
+                                    <span className={getPpeBadgeClass(section.event?.ppeDetails)}>
+                                      {formatPpeStatusLabel(section.event?.ppeDetails)}
+                                    </span>
+                                  ) : (
+                                    <p className="text-sm font-semibold text-primary">
+                                      --
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </article>
                     ))}
@@ -1452,11 +1737,7 @@ function Attendance() {
                   <div className="rounded-2xl border border-dashed border-default px-5 py-12 text-center">
                     <UsersIcon size={30} className="mx-auto mb-3 text-accent" />
                     <p className="text-base font-semibold text-primary">
-                      No workers mapped to this shift yet
-                    </p>
-                    <p className="mt-2 text-sm text-secondary">
-                      Enroll workers into this shift, or leave them unassigned to show
-                      them in every shift roster.
+                      No workers enrolled for this shift
                     </p>
                   </div>
                 )}
@@ -1464,7 +1745,7 @@ function Attendance() {
             </motion.section>
           </div>
 
-          <div className="grid gap-8 2xl:grid-cols-[1.2fr_0.8fr]">
+          <div>
             <motion.section
               custom={2}
               variants={cardVariants}
@@ -1479,9 +1760,6 @@ function Attendance() {
                     <h2 className="font-display text-xl font-semibold text-primary">
                       Review Queue
                     </h2>
-                    <p className="mt-1 text-sm text-secondary">
-                      Low-confidence matches waiting for operator attention stay here.
-                    </p>
                   </div>
                 </div>
                 <span className="badge badge-warning">{pendingReviews.length} active</span>
@@ -1523,11 +1801,26 @@ function Attendance() {
                                 .filter(Boolean)
                                 .join(" · ")}
                             </p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {formatReviewReasons(review).map((reason) => (
+                                <span key={`${review.id}-${reason}`} className="badge badge-warning">
+                                  {reason}
+                                </span>
+                              ))}
+                              {formatPpeStatusLabel(review.ppe_details) ? (
+                                <span className={getPpeBadgeClass(review.ppe_details)}>
+                                  {formatPpeStatusLabel(review.ppe_details)}
+                                </span>
+                              ) : null}
+                            </div>
                             <p className="mt-3 text-sm font-medium text-primary">
-                              This worker is between the manual-review threshold and the
-                              auto-pass threshold. Approve to log attendance, or deny to
-                              keep them outside.
+                              Approve to log attendance with operator authorization, or deny to keep this worker outside the gate.
                             </p>
+                            {normalizePpeDetails(review.ppe_details).missing_items.length > 0 ? (
+                              <p className="mt-2 text-sm text-secondary">
+                                Missing PPE: {normalizePpeDetails(review.ppe_details).missing_items.join(", ")}
+                              </p>
+                            ) : null}
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -1560,78 +1853,6 @@ function Attendance() {
                     </p>
                     <p className="mt-2 text-sm text-secondary">
                       New manual-review matches will appear here for approval or denial.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </motion.section>
-
-            <motion.section
-              custom={3}
-              variants={cardVariants}
-              initial="hidden"
-              animate="visible"
-              className="panel"
-            >
-              <div className="panel__header">
-                <div className="flex items-center gap-3">
-                  <BellIcon size={20} className="text-accent" />
-                  <div>
-                    <h2 className="font-display text-xl font-semibold text-primary">
-                      Manual Override
-                    </h2>
-                    <p className="mt-1 text-sm text-secondary">
-                      Accepted or denied low-confidence matches are logged here.
-                    </p>
-                  </div>
-                </div>
-                <span className="badge badge-info">{overrideEntries.length} logged</span>
-              </div>
-
-              <div className="panel__content space-y-4">
-                {overrideEntries.length > 0 ? (
-                  overrideEntries.map((entry) => (
-                    <article
-                      key={entry.id}
-                      className="rounded-2xl border border-default bg-[var(--color-bg-surface)] p-4"
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-base font-semibold text-primary">
-                            {entry.workerName}
-                          </p>
-                          <p className="mt-1 text-sm text-secondary">
-                            {[entry.cameraSource, `Override by ${entry.triggeredBy}`]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </p>
-                        </div>
-                        <span className="badge badge-warning">{entry.time}</span>
-                      </div>
-                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <p className="eyebrow mb-1.5">Reason</p>
-                          <p className="text-sm font-medium text-primary">
-                            {entry.reason}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="eyebrow mb-1.5">Decision</p>
-                          <p className="text-sm font-medium text-primary">
-                            {entry.decision}
-                          </p>
-                        </div>
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-default px-5 py-10 text-center">
-                    <BellIcon size={30} className="mx-auto mb-3 text-accent" />
-                    <p className="text-base font-semibold text-primary">
-                      No manual overrides recorded
-                    </p>
-                    <p className="mt-2 text-sm text-secondary">
-                      When you accept or deny a manual review, the decision will appear here.
                     </p>
                   </div>
                 )}

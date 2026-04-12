@@ -3,24 +3,125 @@
  * "Precision Command" Design System
  */
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
+import {
+  getAttendance,
+  getAttendanceReviews,
+  getPersons,
+} from "../services/api";
 import {
   clearPlatformLogModule,
   readPlatformLogs,
 } from "../utils/platformLogs";
+import { buildAttendanceSessionState } from "../utils/attendanceSessions";
 import {
-  AlertTriangleIcon,
   DriversIcon,
   AttendanceIcon,
 } from "../components/icons";
 
+const LOG_FILTERS_KEY = "safeguard360-log-filters";
+
+const SHIFT_LABELS = {
+  day: "Day Shift",
+  swing: "Swing Shift",
+  night: "Night Shift",
+};
+
+function normalizePpeDetails(details) {
+  return {
+    status: "not_evaluated",
+    required_items: [],
+    detected_items: [],
+    missing_items: [],
+    override_used: false,
+    override_reason_type: null,
+    detector_message: null,
+    ...(details || {}),
+  };
+}
+
 function formatSessionTime(timestamp) {
+  if (!timestamp) {
+    return "--";
+  }
+
   return new Date(timestamp).toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatConfidence(confidence) {
+  if (confidence == null) {
+    return "Pending";
+  }
+
+  return `${Math.round(confidence * 100)}%`;
+}
+
+function formatPpeStatus(details, { entry = false } = {}) {
+  const ppe = normalizePpeDetails(details);
+  if (!entry) {
+    return "--";
+  }
+  if (ppe.status === "compliant") {
+    return "Helmet and vest confirmed";
+  }
+  if (ppe.status === "non_compliant") {
+    return `Missing ${ppe.missing_items.join(", ")}`;
+  }
+  if (ppe.status === "uncertain") {
+    return "PPE needs operator review";
+  }
+  if (ppe.status === "skipped") {
+    return "PPE not required for this entry";
+  }
+  if (ppe.status === "unavailable") {
+    return "PPE detector unavailable";
+  }
+  return "PPE not evaluated";
+}
+
+function getManualOverrideDetail(session, direction) {
+  return (
+    session.manualOverrideDetails?.find((detail) => detail.direction === direction) ||
+    null
+  );
+}
+
+function readLogFilters() {
+  if (typeof window === "undefined") {
+    return { attendanceClearedAt: 0 };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOG_FILTERS_KEY);
+    if (!raw) {
+      return { attendanceClearedAt: 0 };
+    }
+
+    return {
+      attendanceClearedAt: 0,
+      ...JSON.parse(raw),
+    };
+  } catch (error) {
+    console.error("[Logs] Failed to read filters", error);
+    return { attendanceClearedAt: 0 };
+  }
+}
+
+function writeLogFilters(filters) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(LOG_FILTERS_KEY, JSON.stringify(filters));
+  } catch (error) {
+    console.error("[Logs] Failed to write filters", error);
+  }
 }
 
 const containerVariants = {
@@ -48,28 +149,71 @@ const logCategories = [
     color: "var(--color-success)",
     type: "Attendance Logs",
     description:
-      "Worker check-ins, shift approvals, and access activity by session.",
-  },
-  {
-    icon: AlertTriangleIcon,
-    color: "var(--color-warning)",
-    type: "PPE Logs",
-    description:
-      "PPE detections, access decisions, and override activity by session.",
+      "Completed worker sessions with check-in, check-out, face match, and operator notes.",
   },
 ];
 
 function Logs() {
   const { t } = useAppLanguage();
   const [store, setStore] = useState(() => readPlatformLogs());
-  const fleetSessions = store.fleet.sessions || [];
-  const attendanceSessions = store.attendance?.sessions || [];
-  const ppeSessions = store.gatePpe?.sessions || [];
+  const [filters, setFilters] = useState(() => readLogFilters());
+  const [persons, setPersons] = useState([]);
+  const [attendanceRecords, setAttendanceRecords] = useState([]);
+  const [gateReviews, setGateReviews] = useState([]);
 
+  const fleetSessions = store.fleet.sessions || [];
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadLogs = async () => {
+      try {
+        const [personList, attendanceList, reviewList] = await Promise.all([
+          getPersons(),
+          getAttendance({ limit: 500 }),
+          getAttendanceReviews("all", { limit: 500 }),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setPersons(personList || []);
+        setAttendanceRecords(attendanceList || []);
+        setGateReviews(reviewList || []);
+      } catch (error) {
+        if (!cancelled) {
+          console.error("[Logs] Failed to load backend logs", error);
+        }
+      }
+    };
+
+    loadLogs();
+    const timer = window.setInterval(loadLogs, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const completedSessions = useMemo(
+    () =>
+      buildAttendanceSessionState({
+        persons,
+        attendanceRecords,
+        gateReviews,
+      }).completedSessions.filter((session) => {
+        const endedAt = new Date(
+          session.checkOut?.timestamp || session.checkIn?.timestamp || 0,
+        ).getTime();
+        return endedAt > (filters.attendanceClearedAt || 0);
+      }),
+    [persons, attendanceRecords, gateReviews, filters.attendanceClearedAt],
+  );
   const counts = [
     `${fleetSessions.length} session${fleetSessions.length === 1 ? "" : "s"} tracked`,
-    `${attendanceSessions.length} session${attendanceSessions.length === 1 ? "" : "s"} open`,
-    `${ppeSessions.length} session${ppeSessions.length === 1 ? "" : "s"} open`,
+    `${completedSessions.length} completed session${completedSessions.length === 1 ? "" : "s"}`,
   ];
 
   const handleClearModule = (moduleName) => {
@@ -77,9 +221,17 @@ function Logs() {
     setStore(readPlatformLogs());
   };
 
+  const handleClearAttendanceLogs = () => {
+    const nextFilters = {
+      ...filters,
+      attendanceClearedAt: Date.now(),
+    };
+    setFilters(nextFilters);
+    writeLogFilters(nextFilters);
+  };
+
   return (
     <div className="min-h-screen p-6 xl:p-8">
-      {/* Header */}
       <motion.section
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -91,12 +243,11 @@ function Logs() {
         </h1>
       </motion.section>
 
-      {/* Category cards */}
       <motion.section
         variants={containerVariants}
         initial="hidden"
         animate="visible"
-        className="mb-8 grid gap-4 lg:grid-cols-3"
+        className="mb-8 grid gap-4 lg:grid-cols-2"
       >
         {logCategories.map((cat, i) => (
           <motion.article
@@ -125,9 +276,7 @@ function Logs() {
         ))}
       </motion.section>
 
-      {/* Sessions grid */}
-      <div className="grid gap-6 xl:grid-cols-3">
-        {/* Fleet Sessions */}
+      <div className="grid gap-6 xl:grid-cols-2">
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -161,9 +310,8 @@ function Logs() {
                       {session.driverName}
                     </h3>
                     <p className="mt-1 text-sm text-secondary">
-                      {session.truckId} •{" "}
-                      {session.sourceLabel || "Camera source"} • Started{" "}
-                      {formatSessionTime(session.startedAt)}
+                      {session.truckId} • {session.sourceLabel || "Camera source"} •
+                      Started {formatSessionTime(session.startedAt)}
                     </p>
                   </div>
                   <span className="badge badge-info">
@@ -204,7 +352,6 @@ function Logs() {
             ))
           ) : (
             <div className="relative overflow-hidden rounded-xl border border-dashed border-default bg-card p-8 text-center">
-              {/* Subtle gradient accent */}
               <div
                 className="pointer-events-none absolute inset-0 opacity-30"
                 style={{
@@ -226,7 +373,6 @@ function Logs() {
           )}
         </motion.section>
 
-        {/* Attendance Sessions */}
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -238,18 +384,22 @@ function Logs() {
               Attendance Sessions
             </h2>
             <div className="flex items-center gap-3">
-              <span className="text-sm text-secondary">Workforce flow</span>
+              <span className="text-sm text-secondary">Completed workforce flow</span>
               <button
                 type="button"
-                onClick={() => handleClearModule("attendance")}
+                onClick={handleClearAttendanceLogs}
                 className="btn btn-secondary h-10 px-4"
               >
                 Clear
               </button>
             </div>
           </div>
-          {attendanceSessions.length > 0 ? (
-            attendanceSessions.map((session, index) => (
+          {completedSessions.length > 0 ? (
+            completedSessions.map((session, index) => {
+              const checkInOverride = getManualOverrideDetail(session, "Check-In");
+              const checkOutOverride = getManualOverrideDetail(session, "Check-Out");
+
+              return (
               <article key={session.id} className="panel">
                 <div className="panel__header border-b-0 pb-0">
                   <div>
@@ -257,52 +407,59 @@ function Logs() {
                       Attendance Session {index + 1}
                     </p>
                     <h3 className="mt-1 font-display text-lg font-semibold text-primary">
-                      {session.title || session.workerName || "Attendance Session"}
+                      {session.personName}
                     </h3>
                     <p className="mt-1 text-sm text-secondary">
-                      Started{" "}
-                      {session.startedAt
-                        ? formatSessionTime(session.startedAt)
-                        : "Unknown"}
+                      {[session.employeeId, SHIFT_LABELS[session.shiftId] || "Shift pending"]
+                        .filter(Boolean)
+                        .join(" • ")}
                     </p>
                   </div>
                   <span className="badge badge-success">
-                    {(session.events || []).length} event
-                    {(session.events || []).length === 1 ? "" : "s"}
+                    {session.hasManualOverride ? "Manual override used" : "Auto matched"}
                   </span>
                 </div>
+
                 <div className="panel__content space-y-3">
-                  {(session.events || []).length > 0 ? (
-                    session.events.map((event) => (
-                      <div
-                        key={event.id}
-                        className="rounded-xl border border-default bg-surface px-4 py-3"
-                      >
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <p className="font-medium text-primary">
-                              {event.details || event.title || "Attendance event"}
-                            </p>
-                            <p className="mt-1 text-sm text-secondary">
-                              {event.status || event.sourceLabel || "Attendance"}
-                            </p>
-                          </div>
-                          <span className="text-sm text-tertiary">
-                            {event.timestamp
-                              ? formatSessionTime(event.timestamp)
-                              : "--"}
-                          </span>
-                        </div>
+                  <div className="rounded-xl border border-default bg-surface px-4 py-3">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <p className="eyebrow mb-1.5">Check-In</p>
+                        <p className="text-sm font-semibold text-primary">
+                          {formatSessionTime(session.checkIn?.timestamp)}
+                        </p>
+                        <p className="mt-1 text-sm text-secondary">
+                          Face match: {formatConfidence(session.checkIn?.confidence)}
+                        </p>
+                        {checkInOverride ? (
+                          <p className="mt-1 text-sm text-secondary">
+                            {checkInOverride.note}
+                          </p>
+                        ) : null}
+                        <p className="mt-1 text-sm text-secondary">
+                          PPE: {formatPpeStatus(session.ppeDetails?.checkIn, { entry: true })}
+                        </p>
                       </div>
-                    ))
-                  ) : (
-                    <div className="rounded-xl border border-dashed border-default bg-surface px-4 py-4 text-sm text-secondary">
-                      No attendance events were logged during this session.
+                      <div>
+                        <p className="eyebrow mb-1.5">Check-Out</p>
+                        <p className="text-sm font-semibold text-primary">
+                          {formatSessionTime(session.checkOut?.timestamp)}
+                        </p>
+                        <p className="mt-1 text-sm text-secondary">
+                          Face match: {formatConfidence(session.checkOut?.confidence)}
+                        </p>
+                        {checkOutOverride ? (
+                          <p className="mt-1 text-sm text-secondary">
+                            {checkOutOverride.note}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               </article>
-            ))
+            );
+            })
           ) : (
             <div className="relative overflow-hidden rounded-xl border border-dashed border-default bg-card p-8 text-center">
               <div
@@ -316,113 +473,15 @@ function Logs() {
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-success-muted)]">
                   <AttendanceIcon className="h-6 w-6 text-[var(--color-success)]" />
                 </div>
-                <p className="font-medium text-primary">No Attendance Sessions</p>
+                <p className="font-medium text-primary">No Completed Sessions</p>
                 <p className="mt-1 text-sm text-secondary">
-                  Attendance history will appear here once real worker check-ins are
-                  logged.
+                  Worker sessions appear here after both check-in and check-out are logged.
                 </p>
               </div>
             </div>
           )}
         </motion.section>
 
-        {/* PPE Sessions */}
-        <motion.section
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="space-y-4"
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-xl font-semibold text-primary">
-              PPE Sessions
-            </h2>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-secondary">PPE compliance</span>
-              <button
-                type="button"
-                onClick={() => handleClearModule("gatePpe")}
-                className="btn btn-secondary h-10 px-4"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-          {ppeSessions.length > 0 ? (
-            ppeSessions.map((session, index) => (
-              <article key={session.id} className="panel">
-                <div className="panel__header border-b-0 pb-0">
-                  <div>
-                    <p className="eyebrow text-[10px]">PPE Session {index + 1}</p>
-                    <h3 className="mt-1 font-display text-lg font-semibold text-primary">
-                      {session.title || session.cameraSource || "PPE Session"}
-                    </h3>
-                    <p className="mt-1 text-sm text-secondary">
-                      Started{" "}
-                      {session.startedAt
-                        ? formatSessionTime(session.startedAt)
-                        : "Unknown"}
-                    </p>
-                  </div>
-                  <span className="badge badge-warning">
-                    {(session.events || []).length} event
-                    {(session.events || []).length === 1 ? "" : "s"}
-                  </span>
-                </div>
-                <div className="panel__content space-y-3">
-                  {(session.events || []).length > 0 ? (
-                    session.events.map((event) => (
-                      <div
-                        key={event.id}
-                        className="rounded-xl border border-default bg-surface px-4 py-3"
-                      >
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <p className="font-medium text-primary">
-                              {event.details || event.title || "PPE event"}
-                            </p>
-                            <p className="mt-1 text-sm text-secondary">
-                              {event.status || event.sourceLabel || "PPE"}
-                            </p>
-                          </div>
-                          <span className="text-sm text-tertiary">
-                            {event.timestamp
-                              ? formatSessionTime(event.timestamp)
-                              : "--"}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="rounded-xl border border-dashed border-default bg-surface px-4 py-4 text-sm text-secondary">
-                      No PPE events were logged during this session.
-                    </div>
-                  )}
-                </div>
-              </article>
-            ))
-          ) : (
-            <div className="relative overflow-hidden rounded-xl border border-dashed border-default bg-card p-8 text-center">
-              <div
-                className="pointer-events-none absolute inset-0 opacity-30"
-                style={{
-                  background:
-                    "radial-gradient(ellipse at 50% 0%, var(--color-warning-muted), transparent 60%)",
-                }}
-              />
-              <div className="relative">
-                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-warning-muted)]">
-                  <AlertTriangleIcon className="h-6 w-6 text-[var(--color-warning)]" />
-                </div>
-                <p className="font-medium text-primary">No PPE Sessions</p>
-                <p className="mt-1 text-sm text-secondary">
-                  PPE history will appear here once live compliance detections are
-                  logged.
-                </p>
-              </div>
-            </div>
-          )}
-        </motion.section>
       </div>
     </div>
   );

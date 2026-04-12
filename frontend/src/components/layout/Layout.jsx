@@ -8,6 +8,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useThemePreference } from "../../hooks/useThemePreference";
 import { useAppLanguage } from "../../contexts/AppLanguageContext";
+import { readSessionOperator } from "../../utils/sessionOperator";
 import {
   SteeringWheelIcon,
   AttendanceIcon,
@@ -52,6 +53,7 @@ function Layout() {
   ];
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
   const [currentTime, setCurrentTime] = useState(() => formatHeaderTime(locale));
+  const [sessionOperator, setSessionOperator] = useState(() => readSessionOperator());
 
   // Update time every minute
   useEffect(() => {
@@ -72,6 +74,10 @@ function Layout() {
       sidebarOpen ? "true" : "false",
     );
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    setSessionOperator(readSessionOperator());
+  }, [location.pathname]);
 
   return (
     <div className="flex min-h-screen bg-base">
@@ -217,9 +223,11 @@ function Layout() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
             >
-              <p className="eyebrow text-[10px]">{t("session")}</p>
               <p className="font-display text-lg font-semibold text-primary mt-0.5">
-                {t("authorized_operator")}
+                Signed in as operator
+              </p>
+              <p className="mt-1 text-sm text-secondary">
+                {sessionOperator.email || "No operator signed in"}
               </p>
             </motion.div>
 
