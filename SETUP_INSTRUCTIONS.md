@@ -16,8 +16,7 @@ All necessary scripts and batch files have been created to build the complete di
 ### Option 1: Batch File (Recommended for Windows)
 
 ```bash
-# In Command Prompt:
-cd <repo-root>
+# From the repository root:
 CREATE_DIRS.bat
 ```
 
@@ -26,17 +25,15 @@ Or simply double-click `CREATE_DIRS.bat` in File Explorer.
 ### Option 2: PowerShell Script
 
 ```powershell
-# In PowerShell:
+# From the repository root:
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-cd <repo-root>
 .\create-dirs.ps1
 ```
 
 ### Option 3: Python Script
 
 ```bash
-# In Command Prompt:
-cd <repo-root>
+# From the repository root:
 python create_all_dirs.py
 # or
 python setup_safeguard360.py
@@ -123,11 +120,10 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ## Verification
 
-After running any script, you should see all 33 directories created under:
-`<repo-root>`
+After running any script, you should see all 33 directories created under the repo root.
 
 You can verify by opening File Explorer and browsing to the location, or run:
 
 ```cmd
-dir /s /b <repo-root>
+dir /s /b .
 ```

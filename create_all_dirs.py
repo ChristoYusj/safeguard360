@@ -1,5 +1,7 @@
 import os
-base = r'<repo-root>'
+from pathlib import Path
+
+base = Path(__file__).resolve().parent
 dirs = [
     'backend/app/config', 'backend/app/api', 'backend/app/websocket', 'backend/app/models',
     'backend/app/db', 'backend/app/services', 'backend/app/camera', 'backend/app/inference',
@@ -13,7 +15,7 @@ dirs = [
     'scripts', 'docs', 'tests/test_data'
 ]
 for d in dirs:
-    full_path = os.path.join(base, d)
+    full_path = base / d
     os.makedirs(full_path, exist_ok=True)
     print(f'Created: {full_path}')
 print(f'\nCreated all {len(dirs)} directories')

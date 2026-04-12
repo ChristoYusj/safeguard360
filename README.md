@@ -41,7 +41,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Server runs at: ENV_BACKEND_HTTP_ORIGIN
+The backend host, port, and database path come from the repo-root `.env`.
 
 ### Frontend Setup
 
@@ -51,7 +51,7 @@ npm install
 npm run dev
 ```
 
-Dashboard at: http://localhost:5173
+The frontend dev server uses the repo-root `.env` for backend HTTP and WebSocket targets.
 
 ## Project Structure
 
@@ -73,7 +73,7 @@ safeguard360/
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust settings:
+Copy the repo-root `.env.example` to `.env` and adjust settings:
 
 ```
 DEBUG=true

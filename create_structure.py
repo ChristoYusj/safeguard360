@@ -1,6 +1,7 @@
 import os
+from pathlib import Path
 
-base = r'<repo-root>'
+base = Path(__file__).resolve().parent
 
 dirs = [
     # Backend
@@ -43,7 +44,7 @@ dirs = [
 
 created = 0
 for d in dirs:
-    path = os.path.join(base, d)
+    path = base / d
     os.makedirs(path, exist_ok=True)
     created += 1
     print(f'Created: {d}')

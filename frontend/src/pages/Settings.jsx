@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
 import {
   deletePerson,
   getAttendancePpePolicy,
@@ -19,7 +20,6 @@ import {
   UsersIcon,
 } from "../components/icons";
 import { readAppSettings, writeAppSettings } from "../utils/appSettings";
-import { readSessionOperator } from "../utils/sessionOperator";
 import {
   DEFAULT_DRIVER_PORTRAIT,
   readTestDatabase,
@@ -69,7 +69,7 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
-const supportEmail = "ENV_SUPPORT_EMAIL";
+const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL?.trim() || "";
 const ENROLLMENT_SHIFT_LABELS = {
   day: "Day Shift (06:00 - 14:00)",
   swing: "Swing Shift (14:00 - 22:00)",
@@ -264,6 +264,7 @@ function buildTruckIdFromStateId(stateId) {
 
 function Settings() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { darkMode, toggleDarkMode } = useThemePreference();
   const { t } = useAppLanguage();
   const [settings, setSettings] = useState(readAppSettings);
@@ -340,10 +341,11 @@ function Settings() {
     };
   }, []);
 
-  const sessionOperator = readSessionOperator();
-  const signedInEmail = sessionOperator.email || "No operator signed in";
+  const signedInEmail = user?.email || "No operator signed in";
   const accountType =
-    accessLevelLabels[settings.accessLevel] || "Authorized operator";
+    user?.role_department ||
+    accessLevelLabels[settings.accessLevel] ||
+    "Authorized operator";
   const driverRoleOptions = useMemo(
     () => database.driverOptionHistory?.roles || [],
     [database.driverOptionHistory],
@@ -686,17 +688,21 @@ function Settings() {
     }
   };
 
-  const resetPasswordHref = `mailto:${supportEmail}?subject=${encodeURIComponent(
-    "Password reset request",
-  )}&body=${encodeURIComponent(
-    `Please reset the password for ${sessionOperator.email || "the current account"}.`,
-  )}`;
+  const resetPasswordHref = supportEmail
+    ? `mailto:${supportEmail}?subject=${encodeURIComponent(
+        "Password reset request",
+      )}&body=${encodeURIComponent(
+        `Please reset the password for ${signedInEmail || "the current account"}.`,
+      )}`
+    : null;
 
-  const supportHref = `mailto:${supportEmail}?subject=${encodeURIComponent(
-    "Dashboard support request",
-  )}&body=${encodeURIComponent(
-    `I need dashboard support for the account ${sessionOperator.email || "in this browser session"}.`,
-  )}`;
+  const supportHref = supportEmail
+    ? `mailto:${supportEmail}?subject=${encodeURIComponent(
+        "Dashboard support request",
+      )}&body=${encodeURIComponent(
+        `I need dashboard support for the account ${signedInEmail || "in this browser session"}.`,
+      )}`
+    : null;
 
   return (
     <div className="min-h-screen p-6 xl:p-8">
@@ -1412,17 +1418,21 @@ function Settings() {
                 <span className="text-secondary">{t("account_type")}</span>
                 <p className="mt-1 font-semibold text-primary">{accountType}</p>
               </div>
-              <a
-                href={resetPasswordHref}
-                className="btn btn-secondary h-12 w-full px-4"
-              >
-                {t("reset_password")}
-                <ExternalLinkIcon size={16} />
-              </a>
-              <a href={supportHref} className="btn btn-secondary h-12 w-full px-4">
-                {t("contact_dashboard_support")}
-                <ExternalLinkIcon size={16} />
-              </a>
+              {resetPasswordHref ? (
+                <a
+                  href={resetPasswordHref}
+                  className="btn btn-secondary h-12 w-full px-4"
+                >
+                  {t("reset_password")}
+                  <ExternalLinkIcon size={16} />
+                </a>
+              ) : null}
+              {supportHref ? (
+                <a href={supportHref} className="btn btn-secondary h-12 w-full px-4">
+                  {t("contact_dashboard_support")}
+                  <ExternalLinkIcon size={16} />
+                </a>
+              ) : null}
             </div>
           </motion.section>
 

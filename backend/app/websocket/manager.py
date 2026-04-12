@@ -1,10 +1,14 @@
 """
 WebSocket Connection Manager
 """
+from http.cookies import SimpleCookie
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Set
 import asyncio
 import json
+
+from app.db.connection import SessionLocal
+from app.services.auth import ACCESS_COOKIE_NAME, get_user_by_access_token
 
 
 class ConnectionManager:
@@ -121,12 +125,32 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def _authenticate_websocket(websocket: WebSocket) -> bool:
+    cookie_header = websocket.headers.get("cookie", "")
+    cookie = SimpleCookie()
+    cookie.load(cookie_header)
+    morsel = cookie.get(ACCESS_COOKIE_NAME)
+    token = morsel.value if morsel else None
+
+    db = SessionLocal()
+    try:
+        get_user_by_access_token(db, token)
+        return True
+    except Exception:
+        await websocket.close(code=1008, reason="Authentication required.")
+        return False
+    finally:
+        db.close()
+
+
 def setup_websocket(app: FastAPI):
     """Setup WebSocket routes."""
     
     @app.websocket("/ws/live")
     async def websocket_live(websocket: WebSocket):
         print("[WebSocket] /ws/live connection request")
+        if not await _authenticate_websocket(websocket):
+            return
         await manager.connect_live(websocket)
         try:
             while True:
@@ -144,6 +168,8 @@ def setup_websocket(app: FastAPI):
     @app.websocket("/ws/events")
     async def websocket_events(websocket: WebSocket):
         print("[WebSocket] /ws/events connection request")
+        if not await _authenticate_websocket(websocket):
+            return
         await manager.connect_events(websocket)
         try:
             while True:

@@ -10,6 +10,8 @@ from app.api.router import api_router
 from app.websocket.manager import setup_websocket, manager
 from app.db.connection import init_db
 from app.camera.manager import camera_manager
+from app.config.settings import get_settings
+from app.middleware.auth import OperatorAuthMiddleware
 
 
 async def frame_broadcaster():
@@ -83,17 +85,20 @@ async def frame_broadcaster():
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     print("[App] Creating FastAPI application")
-    
+    settings = get_settings()
+
     app = FastAPI(
         title="SafeGuard 360",
         description="Local-first industrial safety monitoring system",
         version="0.1.0"
     )
-    
+
+    app.add_middleware(OperatorAuthMiddleware)
+
     # CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

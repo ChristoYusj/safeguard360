@@ -4,13 +4,11 @@
  */
 
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import { useAuth } from "../contexts/AuthContext";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
-import {
-  writeSessionOperator,
-} from "../utils/sessionOperator";
 import {
   SunIcon,
   MoonIcon,
@@ -46,22 +44,49 @@ const floatVariants = {
 };
 
 function Portal() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { login, isAuthenticated, isLoading } = useAuth();
   const { darkMode, toggleDarkMode } = useThemePreference();
   const { t } = useAppLanguage();
   const [operatorEmail, setOperatorEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const nextPath = location.state?.from?.pathname || "/modules";
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.removeItem(LEGACY_OPERATOR_EMAIL_KEY);
   }, []);
 
-  const handleSignIn = () => {
-    if (typeof window === "undefined") return;
-    window.localStorage.removeItem(LEGACY_OPERATOR_EMAIL_KEY);
-    writeSessionOperator({
-      email: operatorEmail.trim(),
-      signedInAt: new Date().toISOString(),
-    });
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      navigate(nextPath, { replace: true });
+    }
+  }, [isAuthenticated, isLoading, navigate, nextPath]);
+
+  const handleSignIn = async (event) => {
+    event.preventDefault();
+    if (isSubmitting) {
+      return;
+    }
+
+    setAuthError("");
+    setIsSubmitting(true);
+
+    try {
+      await login({
+        email: operatorEmail.trim(),
+        password,
+      });
+      navigate(nextPath, { replace: true });
+    } catch (error) {
+      setAuthError(error.message || "Unable to sign in with those credentials.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -186,7 +211,7 @@ function Portal() {
             <form
               className="space-y-6"
               autoComplete="off"
-              onSubmit={(e) => e.preventDefault()}
+              onSubmit={handleSignIn}
             >
               {/* Operator ID field */}
               <div className="space-y-2">
@@ -199,10 +224,14 @@ function Portal() {
                 <input
                   id="operatorId"
                   type="text"
+                  required
                   value={operatorEmail}
-                  onChange={(e) => setOperatorEmail(e.target.value)}
+                  onChange={(e) => {
+                    setOperatorEmail(e.target.value);
+                    setAuthError("");
+                  }}
                   placeholder={t("enter_account_email")}
-                  autoComplete="off"
+                  autoComplete="email"
                   spellCheck="false"
                   className="input h-14 text-base"
                 />
@@ -214,22 +243,36 @@ function Portal() {
                   htmlFor="accessKey"
                   className="block text-sm font-semibold text-primary"
                 >
-                  {t("access_key")}
+                  Password
                 </label>
                 <input
                   id="accessKey"
                   type="password"
+                  required
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setAuthError("");
+                  }}
                   placeholder={t("enter_access_key")}
-                  autoComplete="new-password"
+                  autoComplete="current-password"
                   className="input h-14 text-base"
                 />
               </div>
 
+              {authError ? (
+                <div className="rounded-xl border border-[var(--color-error)] bg-[var(--color-error-muted)] px-4 py-3">
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-error)" }}>
+                    {authError}
+                  </p>
+                </div>
+              ) : null}
+
               {/* Sign in button */}
-              <Link
-                to="/modules"
-                onClick={handleSignIn}
-                className="btn btn-primary h-14 w-full text-base font-semibold"
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="btn btn-primary h-14 w-full text-base font-semibold disabled:opacity-60"
               >
                 <span>{t("sign_in")}</span>
                 <svg
@@ -241,7 +284,7 @@ function Portal() {
                 >
                   <path d="M5 12h14M12 5l7 7-7 7" />
                 </svg>
-              </Link>
+              </button>
             </form>
 
             {/* System status */}

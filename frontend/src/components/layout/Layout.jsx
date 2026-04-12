@@ -4,11 +4,11 @@
  */
 
 import { useEffect, useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAuth } from "../../contexts/AuthContext";
 import { useThemePreference } from "../../hooks/useThemePreference";
 import { useAppLanguage } from "../../contexts/AppLanguageContext";
-import { readSessionOperator } from "../../utils/sessionOperator";
 import {
   SteeringWheelIcon,
   AttendanceIcon,
@@ -41,6 +41,8 @@ function formatHeaderTime(locale) {
 
 function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { logout, user } = useAuth();
   const { darkMode, toggleDarkMode } = useThemePreference();
   const { locale, t } = useAppLanguage();
   const navItems = [
@@ -53,7 +55,6 @@ function Layout() {
   ];
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
   const [currentTime, setCurrentTime] = useState(() => formatHeaderTime(locale));
-  const [sessionOperator, setSessionOperator] = useState(() => readSessionOperator());
 
   // Update time every minute
   useEffect(() => {
@@ -75,9 +76,10 @@ function Layout() {
     );
   }, [sidebarOpen]);
 
-  useEffect(() => {
-    setSessionOperator(readSessionOperator());
-  }, [location.pathname]);
+  const handleLogout = async () => {
+    await logout();
+    navigate("/", { replace: true });
+  };
 
   return (
     <div className="flex min-h-screen bg-base">
@@ -227,7 +229,7 @@ function Layout() {
                 Signed in as operator
               </p>
               <p className="mt-1 text-sm text-secondary">
-                {sessionOperator.email || "No operator signed in"}
+                {user?.email || "No operator signed in"}
               </p>
             </motion.div>
 
@@ -275,6 +277,14 @@ function Layout() {
                   {currentTime}
                 </span>
               </div>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="btn btn-secondary h-10 px-4"
+              >
+                Sign out
+              </button>
             </motion.div>
           </div>
         </header>

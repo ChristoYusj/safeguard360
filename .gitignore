@@ -20,9 +20,11 @@ yarn-error.log*
 
 # Environment
 .env
+.env.*
 .env.local
 *.local
 bridge/.env
+!.env.example
 
 # IDE
 .idea/

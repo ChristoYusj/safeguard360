@@ -3,6 +3,7 @@ Main API Router
 """
 from fastapi import APIRouter
 from app.api.alerts import router as alerts_router
+from app.api.auth import router as auth_router
 from app.api.status import router as status_router
 from app.api.camera import router as camera_router
 from app.api.persons import router as persons_router
@@ -12,6 +13,7 @@ from app.api.events import router as events_router
 api_router = APIRouter()
 
 # Include sub-routers
+api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
 api_router.include_router(status_router, tags=["status"])
 api_router.include_router(camera_router, prefix="/camera", tags=["camera"])
 api_router.include_router(persons_router, prefix="/persons", tags=["persons"])

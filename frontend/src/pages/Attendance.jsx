@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useAuth } from "../contexts/AuthContext";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
 import {
   decideAttendanceReview,
@@ -35,7 +36,6 @@ import {
   buildAttendanceSessionState,
   getShiftIdForTimestamp,
 } from "../utils/attendanceSessions";
-import { readSessionOperator } from "../utils/sessionOperator";
 
 const SHIFT_BLOCKS = [
   {
@@ -519,6 +519,7 @@ function StatCard({ icon: Icon, label, value, helper, tone = "accent" }) {
 }
 
 function Attendance() {
+  const { user } = useAuth();
   const { t } = useAppLanguage();
   const [selectedShiftId, setSelectedShiftId] = useState("day");
   const [cameraState, setCameraState] = useState(null);
@@ -545,7 +546,6 @@ function Attendance() {
   });
   const [liveFps, setLiveFps] = useState(0);
   const [decisionInFlightId, setDecisionInFlightId] = useState(null);
-  const sessionOperator = readSessionOperator();
 
   const liveWsRef = useRef(null);
   const eventsWsRef = useRef(null);
@@ -1216,7 +1216,7 @@ function Attendance() {
             ? {
                 ...review,
                 status: decision,
-                decided_by: sessionOperator.email || "Authorized operator",
+                decided_by: user?.email || "Authorized operator",
                 decided_at: new Date().toISOString(),
               }
             : review,
@@ -1224,7 +1224,7 @@ function Attendance() {
       );
       await decideAttendanceReview(reviewId, {
         decision,
-        decided_by: sessionOperator.email || "Authorized operator",
+        decided_by: user?.email || "Authorized operator",
       });
       setAttendanceRefreshTick((current) => current + 1);
     } catch (decisionError) {

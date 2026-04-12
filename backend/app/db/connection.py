@@ -1,7 +1,7 @@
 """
 Database Connection
 """
-import os
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,16 +9,29 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config.settings import get_settings
 from app.db.models import Base
 from app.services.gate_compliance import get_or_create_gate_policy
+from app.services.auth import seed_bootstrap_operator
 
 
 # Create engine
 settings = get_settings()
 
-# Ensure data directory exists
-os.makedirs("data", exist_ok=True)
+def _ensure_sqlite_directory(database_url: str) -> None:
+    if not database_url.startswith("sqlite:///"):
+        return
+
+    sqlite_path = database_url.replace("sqlite:///", "", 1)
+    if sqlite_path == ":memory:":
+        return
+
+    database_path = Path(sqlite_path)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+resolved_database_url = settings.resolved_database_url
+_ensure_sqlite_directory(resolved_database_url)
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    resolved_database_url,
     connect_args={"check_same_thread": False}  # SQLite specific
 )
 
@@ -32,6 +45,21 @@ SQLITE_ADDITIVE_MIGRATIONS = {
         "camera_source_id": "TEXT",
         "log_method": "TEXT",
     },
+    "users": {
+        "password_hash": "TEXT",
+        "status": "TEXT DEFAULT 'pending'",
+        "two_factor_secret": "TEXT",
+        "two_factor_enabled": "BOOLEAN DEFAULT 0",
+        "backup_codes": "TEXT",
+        "failed_login_attempts": "INTEGER DEFAULT 0",
+        "last_failed_login_at": "DATETIME",
+        "lockout_until": "DATETIME",
+        "refresh_token": "TEXT",
+        "role_department": "TEXT",
+        "full_name": "TEXT",
+        "created_at": "DATETIME",
+        "updated_at": "DATETIME",
+    },
     "gate_reviews": {
         "review_reasons": "TEXT",
         "ppe_details": "TEXT",
@@ -40,7 +68,7 @@ SQLITE_ADDITIVE_MIGRATIONS = {
 
 
 def _is_sqlite_engine() -> bool:
-    return str(settings.DATABASE_URL).startswith("sqlite")
+    return str(resolved_database_url).startswith("sqlite")
 
 
 def _get_table_columns(connection, table_name: str) -> set[str]:
@@ -54,6 +82,14 @@ def _apply_sqlite_additive_migrations() -> None:
 
     with engine.begin() as connection:
         for table_name, columns in SQLITE_ADDITIVE_MIGRATIONS.items():
+            table_exists = connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"
+                ),
+                {"table_name": table_name},
+            ).first()
+            if not table_exists:
+                continue
             existing_columns = _get_table_columns(connection, table_name)
             for column_name, column_ddl in columns.items():
                 if column_name in existing_columns:
@@ -69,6 +105,7 @@ def _seed_gate_policy() -> None:
     db = SessionLocal()
     try:
         get_or_create_gate_policy(db)
+        seed_bootstrap_operator(db)
         db.commit()
     finally:
         db.close()

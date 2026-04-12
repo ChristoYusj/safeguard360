@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
 
 # Base path
-base_path = r'<repo-root>'
+base_path = Path(__file__).resolve().parent
 
 # All directories to create
 directories = [
@@ -48,7 +49,7 @@ directories = [
 # Create all directories
 created_count = 0
 for dir_path in directories:
-    full_path = os.path.join(base_path, dir_path)
+    full_path = base_path / dir_path
     os.makedirs(full_path, exist_ok=True)
     created_count += 1
     print(f'Created: {dir_path}')
