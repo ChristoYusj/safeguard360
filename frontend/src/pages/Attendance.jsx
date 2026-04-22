@@ -93,34 +93,6 @@ function parseSourceId(sourceId) {
   };
 }
 
-function getAttendanceTone(worker) {
-  if (worker.attendanceState === "verified") return "badge badge-success";
-  if (worker.attendanceState === "checkedOut") return "badge badge-info";
-  if (worker.attendanceState === "held") {
-    return "badge badge-warning";
-  }
-  return "badge badge-info";
-}
-
-function getAttendanceLabel(worker) {
-  if (worker.attendanceState === "verified") return "Checked In";
-  if (worker.attendanceState === "checkedOut") return "Checked Out";
-  if (worker.attendanceState === "held") return "Review Needed";
-  return "Ready";
-}
-
-function getGateReviewClass(status) {
-  if (status === "matched") return "badge badge-success";
-  if (status === "review") return "badge badge-warning";
-  return "badge badge-info";
-}
-
-function getGateReviewLabel(status) {
-  if (status === "matched") return "Auto Match";
-  if (status === "review") return "Manual Review";
-  return "Awaiting Match";
-}
-
 function normalizePpeDetails(details) {
   return {
     status: "not_evaluated",
@@ -238,30 +210,6 @@ function formatReviewReasons(review) {
   }
 
   return labels.length > 0 ? labels : ["Operator review required"];
-}
-
-function getTodayStorageKey() {
-  const now = new Date();
-  const year = String(now.getFullYear());
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function loadDismissedViolationIds(storageKey) {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(
-      `safeguard360:attendance:cleared-ppe-violations:${storageKey}`,
-    );
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 function ToggleSwitch({ checked, disabled = false, ariaLabel, onClick }) {

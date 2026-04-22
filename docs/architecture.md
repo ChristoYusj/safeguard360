@@ -1,85 +1,136 @@
-# SafeGuard 360 — Architecture
+# SafeGuard 360 Architecture
 
-Local-first industrial safety monitoring system. All inference runs on the
-host machine. Only the AI chatbot reaches the network (Groq or OpenAI).
+This document reflects the current shipped structure in the repo, not the
+older backlog or prototype layout.
 
-## High-Level Diagram
+## System Overview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                          WINDOWS HOST                            │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                     FASTAPI BACKEND                        │  │
-│  │                                                            │  │
-│  │  Camera Manager ─► Gate Detector     ─► Decision / Events  │  │
-│  │    (single     )    (face + PPE)        (DB + WebSocket)   │  │
-│  │        │        ─► Driver Detector                         │  │
-│  │        │            (fatigue / attention)                  │  │
-│  │        ▼                                                   │  │
-│  │  InsightFace · YOLOv8 · MediaPipe                          │  │
-│  │                                                            │  │
-│  │  Chatbot Service ─► Groq / OpenAI (HTTP)                   │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  SQLite (data/safeguard360.db)     data/models/  (weights)       │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                 REACT DASHBOARD (browser)                  │  │
-│  │                                                            │  │
-│  │  Portal · Dashboard · Attendance · Enrollment · Logs ·     │  │
-│  │  Chatbot · User mgmt · Settings   (AlertFeedProvider on    │  │
-│  │                                    every authed page)     │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
+SafeGuard 360 is a local-first Windows deployment with:
 
-## Backend Components
+- `backend/`: FastAPI API, camera orchestration, inference, database access,
+  and WebSocket broadcasting
+- `frontend/`: React dashboard for Attendance, Fleet Monitoring, Enrollment,
+  Logs, Settings, and the chatbot
+- `data/`: shared SQLite database and model weights
+- `backend/data/`: runtime snapshots and face media
 
-| Component                  | File                                       | Responsibility                                            |
-| -------------------------- | ------------------------------------------ | --------------------------------------------------------- |
-| `camera_manager`           | `app/camera/manager.py`                    | Owns the single capture thread, exposes frames to workers |
-| `GateAttendanceRecognizer` | `app/services/gate_attendance.py`          | Face quality gating, embedding match, PPE + shift checks |
-| `PpeDetector`              | `app/inference/ppe_detector.py`            | YOLOv8 wrapper with negative-class filtering             |
-| `FaceRecognizer`           | `app/inference/face_recognizer.py`         | InsightFace (ArcFace) loader + cosine similarity         |
-| `DriverDetector`           | `app/inference/driver.py`                  | Fatigue, distraction, seatbelt landmarks                 |
-| `chatbot.send_chat`        | `app/services/chatbot.py`                  | Groq / OpenAI proxy with provider auto-selection         |
-| `/ws/events`               | `app/factory.py` + `app/api/…`             | Broadcasts driver events + attendance matches            |
+Only the chatbot reaches external services. Face recognition, PPE detection,
+and Fleet MediaPipe analysis all run locally.
 
-## Data Stores
+## Core Backend Ownership
 
-- **`data/safeguard360.db`** — SQLite master DB (users, persons, events,
-  alerts, gate policy).
-- **`data/models/`** — Inference weights. `ppe-hansung.pt` at the root;
-  InsightFace weights under `models/buffalo_l/`.
-- **`backend/data/faces/<person_id>/`** — Enrollment thumbnails + profile json.
-- **`backend/data/attendance/<record_id>/`** — Gate snapshot jpegs per event.
+### Camera Manager
 
-Paths are resolved against the repo root (`settings.resolved_models_dir`,
-`settings.resolved_database_url`) so launch CWD doesn't matter.
+File: `backend/app/camera/manager.py`
 
-## Gate Flow (single camera)
+`CameraManager` is the single owner of live capture. It:
 
-1. Capture thread grabs frames at `FPS_LIMIT`.
-2. `GateAttendanceRecognizer` scores faces for blur, size, and yaw offset;
-   rejects with a specific guidance message.
-3. Best face is matched against enrolled embeddings (cosine ≥
-   `FACE_MATCH_THRESHOLD`).
-4. PPE detector runs on the expanded torso ROI.
-5. Shift window check (`is_within_shift`) flags off-schedule arrivals.
-6. Decision is written as an `Event` + `Alert`; WebSocket pushes the live
-   payload.
-7. Dashboard displays the match + (on violation) flashes site-wide banner.
+- opens and closes the selected camera source
+- keeps one shared raw-frame slot
+- runs separate worker threads for:
+  - preview overlay rendering
+  - gate recognition
+  - Fleet driver detection
+- keeps the capture loop lean so device FPS is not blocked by inference
 
-## Driver Flow
+This is the central arbitration point for Attendance and Fleet. Surrounding
+systems should not open the camera independently.
 
-1. Dedicated MediaPipe pipeline runs inline in the capture thread.
-2. Eye aspect ratio, head pose, and mouth open signals drive fatigue /
-   distraction events.
-3. Events broadcast as `driver_event` over the same `/ws/events` socket.
+### Gate Attendance
 
-## Modes
+File: `backend/app/services/gate_attendance.py`
 
-- **Gate** — face + PPE verification for entry.
-- **Driver** — in-cab fatigue / distraction monitoring.
-- **Idle** — capture released, no inference.
+`GateAttendanceRecognizer` owns live gate state. It handles:
+
+- face quality gating
+- ArcFace embedding match against enrolled workers
+- PPE evaluation and PPE review reasons
+- entry vs exit planning
+- pending review creation
+- attendance record logging
+- live overlay state for the gate preview
+
+Gate direction mode is `ENTRY` or `EXIT`. In `EXIT`, the recognizer narrows
+matching to workers currently on site.
+
+### Fleet / Driver Runtime
+
+Files:
+
+- `backend/app/camera/driver_runtime.py`
+- `backend/app/inference/driver.py`
+
+Fleet MediaPipe now runs through an in-process runtime wrapper. The current
+path:
+
+- initializes the MediaPipe detector once
+- keeps detector state in the driver runtime client
+- lets the camera manager's driver worker pull the latest raw frame
+- avoids the earlier subprocess/pipe failure path
+- keeps preview rendering independent from detection latency
+
+## Realtime Flow
+
+File: `backend/app/factory.py`
+
+The background frame broadcaster:
+
+- emits the latest preview frame when a new encoded frame is ready
+- emits periodic camera status payloads
+- attaches driver state when mode is `driver`
+- attaches gate state when mode is `gate`
+- broadcasts pending `driver_event` and `attendance_match` events
+
+All live traffic goes through `/ws/events`.
+
+## Data Flow
+
+### Attendance / Gate
+
+1. Camera manager captures frames.
+2. Gate worker reads the newest frame only.
+3. Gate recognizer performs:
+   - face detection and quality checks
+   - ArcFace matching
+   - PPE scan when applicable
+   - attendance action planning
+4. If review is needed, a `GateReview` record is created.
+5. If access is granted, an `Attendance` record is written.
+6. Events and live state are broadcast to the frontend.
+
+### Fleet Monitoring
+
+1. Camera manager captures frames.
+2. Driver worker pulls the newest frame on its own cadence.
+3. MediaPipe landmarks are processed in the driver runtime.
+4. Fatigue/distraction state is updated.
+5. Driver events and live state are broadcast to the frontend.
+
+## Persistence
+
+### Repo-level shared data
+
+- `data/safeguard360.db`: master SQLite database
+- `data/models/`: model directory resolved from the repo root
+
+### Backend runtime outputs
+
+- `backend/data/faces/<person_id>/`: enrollment media and thumbnails
+- `backend/data/attendance/<record_id>/`: attendance snapshots
+
+## Frontend Responsibilities
+
+Primary page files live under `frontend/src/pages/`.
+
+- `Attendance.jsx`: live gate feed, review queue, PPE command center, and
+  workforce roster
+- `Dashboard.jsx`: Fleet Monitoring live view and MediaPipe controls
+- `Enrollment.jsx`: worker enrollment and profile media
+
+The frontend does not own inference. It renders current backend state and sends
+operator actions to the API.
+
+## Current Documentation Map
+
+- `README.md`: setup, run commands, and operator quick guide
+- `docs/attendance-gate.md`: gate operator behavior and PPE flow

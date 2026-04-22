@@ -47,9 +47,19 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+coverage/
 
 # Build / logs
 frontend/dist/
+frontend/.vite/
 *.log
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
