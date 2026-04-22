@@ -1,136 +1,226 @@
 # SafeGuard 360 Architecture
 
-This document reflects the current shipped structure in the repo, not the
-older backlog or prototype layout.
+This document describes SafeGuard 360 as a system, not just as a repo.
 
-## System Overview
+## Product Boundary
 
-SafeGuard 360 is a local-first Windows deployment with:
+SafeGuard 360 is a local-first edge safety platform with a browser-based
+operator UI.
 
-- `backend/`: FastAPI API, camera orchestration, inference, database access,
-  and WebSocket broadcasting
-- `frontend/`: React dashboard for Attendance, Fleet Monitoring, Enrollment,
-  Logs, Settings, and the chatbot
-- `data/`: shared SQLite database and model weights
-- `backend/data/`: runtime snapshots and face media
+It has two clear sides:
 
-Only the chatbot reaches external services. Face recognition, PPE detection,
-and Fleet MediaPipe analysis all run locally.
+- the `web application side`
+  UI, API calls, operator workflows, and dashboards
+- the `local edge runtime side`
+  camera ownership, local inference, local database, model files, and live
+  event generation
 
-## Core Backend Ownership
+This distinction matters because the system cannot be understood or deployed
+correctly if it is treated like a normal stateless website.
+
+## Deployment Shape
+
+### Browser / UI Layer
+
+Files:
+
+- `frontend/src/pages/*`
+- `frontend/src/services/api.js`
+
+Responsibilities:
+
+- render operator controls and state
+- render roster, review queue, and event history
+- display the live preview stream
+- send operator actions to the backend
+- subscribe to websocket updates
+
+The browser does not run the face, PPE, or driver models.
+
+### Backend / Edge Layer
+
+Files:
+
+- `backend/app/factory.py`
+- `backend/app/api/*`
+- `backend/app/camera/*`
+- `backend/app/inference/*`
+- `backend/app/services/*`
+
+Responsibilities:
+
+- own the local camera
+- run gate recognition and PPE inference
+- run Fleet MediaPipe analysis
+- store local attendance and review state
+- emit live websocket frames and events
+- serve the UI with current state
+
+### Local Persistence Layer
+
+Paths:
+
+- `data/safeguard360.db`
+- `backend/data/attendance/`
+- `backend/data/faces/`
+
+Responsibilities:
+
+- attendance records
+- worker roster / enrollment state
+- snapshots and thumbnails
+- gate review persistence
+- event and alert history
+
+### Model Layer
+
+Paths:
+
+- `data/models/ppe-hansung.pt`
+- `data/models/models/buffalo_l/`
+
+Responsibilities:
+
+- PPE object detection
+- face detection / embedding generation
+
+These are runtime dependencies, not normal web assets.
+
+## Ownership Map
 
 ### Camera Manager
 
-File: `backend/app/camera/manager.py`
+Primary file:
 
-`CameraManager` is the single owner of live capture. It:
+- `backend/app/camera/manager.py`
 
-- opens and closes the selected camera source
-- keeps one shared raw-frame slot
-- runs separate worker threads for:
-  - preview overlay rendering
-  - gate recognition
-  - Fleet driver detection
-- keeps the capture loop lean so device FPS is not blocked by inference
+Owns:
 
-This is the central arbitration point for Attendance and Fleet. Surrounding
-systems should not open the camera independently.
+- active camera source
+- raw frame slot
+- preview encoding
+- gate worker loop
+- Fleet worker loop
+- module ownership and mode switching
 
-### Gate Attendance
+The camera manager is the single arbitration point between Attendance and
+Fleet. It prevents independent camera access from fragmenting runtime state.
 
-File: `backend/app/services/gate_attendance.py`
+### Gate Attendance Recognizer
 
-`GateAttendanceRecognizer` owns live gate state. It handles:
+Primary file:
+
+- `backend/app/services/gate_attendance.py`
+
+Owns:
 
 - face quality gating
-- ArcFace embedding match against enrolled workers
-- PPE evaluation and PPE review reasons
+- candidate matching against enrolled workers
+- PPE evaluation and review-reason generation
 - entry vs exit planning
-- pending review creation
-- attendance record logging
-- live overlay state for the gate preview
+- pending review lifecycle
+- attendance logging decisions
+- live gate overlay state
 
-Gate direction mode is `ENTRY` or `EXIT`. In `EXIT`, the recognizer narrows
-matching to workers currently on site.
+### Fleet Driver Runtime
 
-### Fleet / Driver Runtime
-
-Files:
+Primary files:
 
 - `backend/app/camera/driver_runtime.py`
 - `backend/app/inference/driver.py`
 
-Fleet MediaPipe now runs through an in-process runtime wrapper. The current
-path:
+Owns:
 
-- initializes the MediaPipe detector once
-- keeps detector state in the driver runtime client
-- lets the camera manager's driver worker pull the latest raw frame
-- avoids the earlier subprocess/pipe failure path
-- keeps preview rendering independent from detection latency
+- MediaPipe detector lifecycle
+- landmark extraction
+- fatigue/distraction state
+- driver overlay state
+- emitted driver events
 
-## Realtime Flow
+Current architecture keeps the MediaPipe path in-process and tied to the
+backend runtime rather than a separate subprocess worker.
 
-File: `backend/app/factory.py`
+### Websocket Broadcaster
 
-The background frame broadcaster:
+Primary file:
 
-- emits the latest preview frame when a new encoded frame is ready
-- emits periodic camera status payloads
-- attaches driver state when mode is `driver`
-- attaches gate state when mode is `gate`
-- broadcasts pending `driver_event` and `attendance_match` events
+- `backend/app/factory.py`
 
-All live traffic goes through `/ws/events`.
+Owns:
 
-## Data Flow
+- preview frame broadcast
+- status payload broadcast
+- gate event broadcast
+- driver event broadcast
 
-### Attendance / Gate
+This is the live bridge between the edge runtime and the browser UI.
 
-1. Camera manager captures frames.
-2. Gate worker reads the newest frame only.
-3. Gate recognizer performs:
-   - face detection and quality checks
-   - ArcFace matching
-   - PPE scan when applicable
-   - attendance action planning
-4. If review is needed, a `GateReview` record is created.
-5. If access is granted, an `Attendance` record is written.
-6. Events and live state are broadcast to the frontend.
+## Runtime Modes
 
-### Fleet Monitoring
+### Idle
 
-1. Camera manager captures frames.
-2. Driver worker pulls the newest frame on its own cadence.
-3. MediaPipe landmarks are processed in the driver runtime.
-4. Fatigue/distraction state is updated.
-5. Driver events and live state are broadcast to the frontend.
+- camera not in active inference mode
+- no gate or Fleet processing
 
-## Persistence
+### Gate
 
-### Repo-level shared data
+- gate recognition worker active
+- gate overlay state active
+- attendance and review logic active
 
-- `data/safeguard360.db`: master SQLite database
-- `data/models/`: model directory resolved from the repo root
+### Driver
 
-### Backend runtime outputs
+- Fleet MediaPipe runtime active
+- driver overlay state active
+- fatigue/distraction event generation active
 
-- `backend/data/faces/<person_id>/`: enrollment media and thumbnails
-- `backend/data/attendance/<record_id>/`: attendance snapshots
+## Hosted Pieces Vs Local Pieces
 
-## Frontend Responsibilities
+### Pieces that could be hosted in a more normal web environment
 
-Primary page files live under `frontend/src/pages/`.
+- React frontend
+- backend HTTP API
+- authentication flows
+- settings / admin UI
+- docs and static project pages
+- chatbot request handling
 
-- `Attendance.jsx`: live gate feed, review queue, PPE command center, and
-  workforce roster
-- `Dashboard.jsx`: Fleet Monitoring live view and MediaPipe controls
-- `Enrollment.jsx`: worker enrollment and profile media
+### Pieces that are inherently local / edge-bound in the current design
 
-The frontend does not own inference. It renders current backend state and sends
-operator actions to the API.
+- webcam access
+- gate preview processing
+- MediaPipe Fleet analysis
+- YOLO PPE inference
+- face recognition runtime
+- local snapshots and face media
+- local model files
+- local SQLite state
 
-## Current Documentation Map
+That means SafeGuard 360 is best understood as an edge deployment with a web
+dashboard, not a pure SaaS browser app.
 
-- `README.md`: setup, run commands, and operator quick guide
-- `docs/attendance-gate.md`: gate operator behavior and PPE flow
+## Security And Data Shape
+
+### Source-controlled assets
+
+- code
+- docs
+- config templates
+- tests
+
+### Local-only assets
+
+- `.env`
+- SQLite database
+- model weights
+- enrollment images
+- attendance snapshots
+- logs and caches
+
+This separation is intentional because the local-only assets are environment
+data, secrets, or runtime outputs.
+
+## Related Docs
+
+- [system-flow.md](system-flow.md)
+- [attendance-gate.md](attendance-gate.md)
