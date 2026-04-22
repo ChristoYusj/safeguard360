@@ -25,6 +25,7 @@ const API_BASE = getApiBase();
 const DEFAULT_FETCH_OPTIONS = {
   credentials: "include",
 };
+let refreshRequest = null;
 
 function buildCameraOwner(moduleName) {
   if (!moduleName) {
@@ -67,13 +68,43 @@ async function readJsonResponse(res) {
   }
 
   if (!res.ok) {
-    const message =
-      data?.detail ||
-      data?.message ||
-      data?.error ||
-      rawText ||
-      `Request failed with status ${res.status}`;
-    throw new Error(message);
+    // FastAPI validation errors come back as `{detail: [{loc, msg, type}, ...]}`.
+    // Turn those into a readable sentence instead of the default Array→Object
+    // stringification that renders as "[object Object]".
+    const detail = data?.detail;
+    let message = null;
+    if (typeof detail === "string") {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      message = detail
+        .map((item) => {
+          if (!item || typeof item !== "object") return String(item);
+          const field = Array.isArray(item.loc)
+            ? item.loc.filter((segment) => segment !== "body").join(".")
+            : "";
+          const base = item.msg || item.type || "Validation error";
+          return field ? `${field}: ${base}` : base;
+        })
+        .join("; ");
+    } else if (detail && typeof detail === "object") {
+      message = detail.message || JSON.stringify(detail);
+    }
+    if (!message) {
+      message =
+        data?.message ||
+        data?.error ||
+        rawText ||
+        `Request failed with status ${res.status}`;
+    }
+    const error = new Error(message);
+    if (data && typeof data === "object") {
+      Object.assign(error, data);
+    }
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      Object.assign(error, detail);
+    }
+    error.status = res.status;
+    throw error;
   }
 
   if (data === null) {
@@ -83,48 +114,175 @@ async function readJsonResponse(res) {
   return data;
 }
 
-export async function getStatus() {
-  const res = await fetch(`${API_BASE}/status`, DEFAULT_FETCH_OPTIONS);
+async function refreshOperatorSessionRequest() {
+  if (!refreshRequest) {
+    refreshRequest = fetch(`${API_BASE}/auth/refresh`, {
+      ...DEFAULT_FETCH_OPTIONS,
+      method: "POST",
+    })
+      .then(readJsonResponse)
+      .finally(() => {
+        refreshRequest = null;
+      });
+  }
+
+  return refreshRequest;
+}
+
+async function fetchJson(path, init = {}, { retryOnAuth = true } = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...DEFAULT_FETCH_OPTIONS,
+    ...init,
+  });
+
+  if (res.status === 401 && retryOnAuth) {
+    try {
+      await refreshOperatorSessionRequest();
+    } catch {
+      return readJsonResponse(res);
+    }
+
+    const retryResponse = await fetch(`${API_BASE}${path}`, {
+      ...DEFAULT_FETCH_OPTIONS,
+      ...init,
+    });
+    return readJsonResponse(retryResponse);
+  }
+
   return readJsonResponse(res);
 }
 
 export async function loginOperator(data) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, { retryOnAuth: false });
+}
+
+export async function registerOperator(data) {
+  return fetchJson("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, { retryOnAuth: false });
+}
+
+export async function requestPasswordReset(data) {
+  return fetchJson("/auth/password-reset/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, { retryOnAuth: false });
+}
+
+export async function confirmPasswordReset(data) {
+  return fetchJson("/auth/password-reset/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, { retryOnAuth: false });
+}
+
+export async function changeOperatorPassword(data) {
+  return fetchJson("/auth/password/change", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return readJsonResponse(res);
+}
+
+export async function verifyTwoFactorLogin(data) {
+  return fetchJson("/auth/2fa/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }, { retryOnAuth: false });
+}
+
+export async function startTwoFactorSetup() {
+  return fetchJson("/auth/2fa/setup", { method: "POST" });
+}
+
+export async function confirmTwoFactorEnable(data) {
+  return fetchJson("/auth/2fa/enable", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function disableTwoFactorAuth(data) {
+  return fetchJson("/auth/2fa/disable", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
 }
 
 export async function getCurrentOperator() {
-  const res = await fetch(`${API_BASE}/auth/me`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/auth/me", {}, { retryOnAuth: false });
+}
+
+export async function refreshOperatorSession() {
+  return refreshOperatorSessionRequest();
 }
 
 export async function logoutOperator() {
-  const res = await fetch(`${API_BASE}/auth/logout`, {
-    ...DEFAULT_FETCH_OPTIONS,
-    method: "POST",
-  });
-  return readJsonResponse(res);
+  return fetchJson("/auth/logout", { method: "POST" }, { retryOnAuth: false });
 }
 
-export async function switchMode(mode) {
-  const res = await fetch(`${API_BASE}/mode`, {
-    ...DEFAULT_FETCH_OPTIONS,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
+export async function getAdminUsers() {
+  return fetchJson("/admin/users");
+}
+
+export async function getAuditLogs(params = {}) {
+  const query = new URLSearchParams();
+  if (params.event_type) {
+    query.set("event_type", params.event_type);
+  }
+  if (params.date_from) {
+    query.set("date_from", params.date_from);
+  }
+  if (params.date_to) {
+    query.set("date_to", params.date_to);
+  }
+  if (params.limit) {
+    query.set("limit", String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return fetchJson(`/admin/audit-logs${suffix}`);
+}
+
+export async function clearAuditLogs() {
+  return fetchJson("/admin/audit-logs", {
+    method: "DELETE",
   });
-  return readJsonResponse(res);
+}
+
+export async function updateAdminUser(userId, data) {
+  return fetchJson(`/admin/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function unlockAdminUser(userId) {
+  return fetchJson(`/admin/users/${userId}/unlock`, {
+    method: "POST",
+  });
+}
+
+export async function deleteAdminUser(userId) {
+  return fetchJson(`/admin/users/${userId}`, {
+    method: "DELETE",
+  });
 }
 
 // Camera endpoints
 export async function getCameraSources() {
-  const res = await fetch(`${API_BASE}/camera/sources`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/camera/sources");
 }
 
 export function getCameraOwner(moduleName) {
@@ -132,8 +290,7 @@ export function getCameraOwner(moduleName) {
 }
 
 export async function startCamera(sourceType, sourceId = "", owner = null) {
-  const res = await fetch(`${API_BASE}/camera/start`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/camera/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -142,25 +299,21 @@ export async function startCamera(sourceType, sourceId = "", owner = null) {
       ...(owner || {}),
     }),
   });
-  return readJsonResponse(res);
 }
 
 export async function stopCamera(owner = null) {
   const requestInit = owner
     ? {
-        ...DEFAULT_FETCH_OPTIONS,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(owner),
       }
     : { ...DEFAULT_FETCH_OPTIONS, method: "POST" };
-  const res = await fetch(`${API_BASE}/camera/stop`, requestInit);
-  return readJsonResponse(res);
+  return fetchJson("/camera/stop", requestInit);
 }
 
 export async function getCameraState() {
-  const res = await fetch(`${API_BASE}/camera/state`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/camera/state");
 }
 
 export async function setCameraMode(mode, owner = null) {
@@ -172,8 +325,7 @@ export async function setCameraMode(mode, owner = null) {
         body: JSON.stringify(owner),
       }
     : { ...DEFAULT_FETCH_OPTIONS, method: "POST" };
-  const res = await fetch(`${API_BASE}/camera/mode/${mode}`, requestInit);
-  return readJsonResponse(res);
+  return fetchJson(`/camera/mode/${mode}`, requestInit);
 }
 
 export async function getAttendance({ limit = 50, personId } = {}) {
@@ -183,59 +335,51 @@ export async function getAttendance({ limit = 50, personId } = {}) {
     params.set("person_id", personId);
   }
 
-  const res = await fetch(
-    `${API_BASE}/attendance?${params.toString()}`,
-    DEFAULT_FETCH_OPTIONS,
-  );
-  return readJsonResponse(res);
+  return fetchJson(`/attendance?${params.toString()}`);
+}
+
+export async function clearAttendanceLogs() {
+  return fetchJson("/attendance/logs", {
+    method: "DELETE",
+  });
 }
 
 export async function getAttendanceReviews(statusFilter = "all", { limit = 50 } = {}) {
-  const res = await fetch(
-    `${API_BASE}/attendance/reviews?status_filter=${encodeURIComponent(statusFilter)}&limit=${encodeURIComponent(limit)}`,
-    DEFAULT_FETCH_OPTIONS,
+  return fetchJson(
+    `/attendance/reviews?status_filter=${encodeURIComponent(statusFilter)}&limit=${encodeURIComponent(limit)}`,
   );
-  return readJsonResponse(res);
 }
 
 export async function getAttendanceGateMode() {
-  const res = await fetch(`${API_BASE}/attendance/gate-mode`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/attendance/gate-mode");
 }
 
 export async function getAttendancePpePolicy() {
-  const res = await fetch(`${API_BASE}/attendance/ppe-policy`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/attendance/ppe-policy");
 }
 
 export async function updateAttendancePpePolicy(data) {
-  const res = await fetch(`${API_BASE}/attendance/ppe-policy`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/attendance/ppe-policy", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return readJsonResponse(res);
 }
 
 export async function setAttendanceGateMode(directionMode) {
-  const res = await fetch(`${API_BASE}/attendance/gate-mode`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/attendance/gate-mode", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ direction_mode: directionMode }),
   });
-  return readJsonResponse(res);
 }
 
 export async function decideAttendanceReview(reviewId, data) {
-  const res = await fetch(`${API_BASE}/attendance/reviews/${reviewId}/decision`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson(`/attendance/reviews/${reviewId}/decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return readJsonResponse(res);
 }
 
 export async function getEvents(category) {
@@ -243,54 +387,40 @@ export async function getEvents(category) {
   if (category) {
     query.set("category", category);
   }
-  const res = await fetch(
-    `${API_BASE}/events${query.toString() ? `?${query.toString()}` : ""}`,
-    DEFAULT_FETCH_OPTIONS,
-  );
-  return readJsonResponse(res);
+  return fetchJson(`/events${query.toString() ? `?${query.toString()}` : ""}`);
 }
 
 export async function getAlerts() {
-  const res = await fetch(`${API_BASE}/alerts`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/alerts");
 }
 
 export async function acknowledgeAlert(id) {
-  const res = await fetch(`${API_BASE}/alerts/${id}/ack`, {
-    ...DEFAULT_FETCH_OPTIONS,
-    method: "POST",
-  });
-  return readJsonResponse(res);
+  return fetchJson(`/alerts/${id}/ack`, { method: "POST" });
 }
 
-export async function getPersons() {
-  const res = await fetch(`${API_BASE}/persons`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+export async function getPersons({ includeInactive = false } = {}) {
+  const query = includeInactive ? "?include_inactive=true" : "";
+  return fetchJson(`/persons${query}`);
 }
 
 export async function getRecognizerStatus() {
-  const res = await fetch(`${API_BASE}/persons/recognizer`, DEFAULT_FETCH_OPTIONS);
-  return readJsonResponse(res);
+  return fetchJson("/persons/recognizer");
 }
 
 export async function enrollPerson(data) {
-  const res = await fetch(`${API_BASE}/persons`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/persons", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return readJsonResponse(res);
 }
 
 export async function updatePerson(id, data) {
-  const res = await fetch(`${API_BASE}/persons/${id}`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson(`/persons/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return readJsonResponse(res);
 }
 
 export async function enrollPersonWithMedia({ name, employeeId, shiftId, files }) {
@@ -306,12 +436,10 @@ export async function enrollPersonWithMedia({ name, employeeId, shiftId, files }
     formData.append("files", file, file.name);
   }
 
-  const res = await fetch(`${API_BASE}/persons/enroll-media`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson("/persons/enroll-media", {
     method: "POST",
     body: formData,
   });
-  return readJsonResponse(res);
 }
 
 export async function updatePersonEnrollmentMedia({
@@ -333,18 +461,38 @@ export async function updatePersonEnrollmentMedia({
     formData.append("files", file, file.name);
   }
 
-  const res = await fetch(`${API_BASE}/persons/${personId}/enroll-media`, {
-    ...DEFAULT_FETCH_OPTIONS,
+  return fetchJson(`/persons/${personId}/enroll-media`, {
     method: "POST",
     body: formData,
   });
-  return readJsonResponse(res);
 }
 
 export async function deletePerson(id) {
-  const res = await fetch(`${API_BASE}/persons/${id}`, {
-    ...DEFAULT_FETCH_OPTIONS,
-    method: "DELETE",
+  return fetchJson(`/persons/${id}`, { method: "DELETE" });
+}
+
+export async function bulkImportPersons(file) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  return fetchJson("/persons/bulk-import", {
+    method: "POST",
+    body: formData,
   });
-  return readJsonResponse(res);
+}
+
+// AI Safety Chatbot endpoints
+export async function getChatbotStatus() {
+  return fetchJson("/chatbot/status");
+}
+
+export async function getChatbotContext() {
+  return fetchJson("/chatbot/context");
+}
+
+export async function sendChatbotMessage(messages) {
+  return fetchJson("/chatbot/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
 }

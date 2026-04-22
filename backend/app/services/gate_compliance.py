@@ -5,11 +5,55 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.db.models import Alert, Event, GatePolicy
+
+
+# Shift time windows used to flag workers arriving outside their schedule.
+# Times are in local server time, 24-hour. Night wraps past midnight.
+SHIFT_WINDOWS = {
+    "day": (6, 14),     # 06:00 – 14:00
+    "swing": (14, 22),  # 14:00 – 22:00
+    "night": (22, 6),   # 22:00 – 06:00 (wraps)
+}
+
+# How long before/after the shift start the worker is considered on-schedule.
+# Early arrivals and small overruns are normal — only flag clearly off-shift.
+SHIFT_GRACE_HOURS = 1.5
+
+
+def is_within_shift(shift_id: Optional[str], when: Optional[datetime] = None) -> bool:
+    """True if `when` falls within the configured window for `shift_id`.
+
+    Returns True if shift_id is unknown/None (we don't penalise unassigned
+    workers). Applies a grace window around the boundaries so clocking in
+    a bit early or running late doesn't create false warnings.
+    """
+    if not shift_id:
+        return True
+    window = SHIFT_WINDOWS.get(shift_id.lower())
+    if not window:
+        return True
+    start_h, end_h = window
+    t = (when or datetime.now()).time()
+    hour = t.hour + t.minute / 60.0
+
+    # Expand window by grace on both sides.
+    start_h_expanded = (start_h - SHIFT_GRACE_HOURS) % 24
+    end_h_expanded = (end_h + SHIFT_GRACE_HOURS) % 24
+
+    if start_h < end_h:
+        # Normal window (day/swing). Handle potential underflow on start.
+        if start_h_expanded < end_h_expanded:
+            return start_h_expanded <= hour <= end_h_expanded
+        # Grace pushed start past midnight.
+        return hour >= start_h_expanded or hour <= end_h_expanded
+    # Wrapping window (night).
+    return hour >= start_h_expanded or hour <= end_h_expanded
 
 DEFAULT_GATE_POLICY = {
     "require_helmet": True,
@@ -153,6 +197,11 @@ def ppe_reason_messages(review_reasons: Iterable[str]) -> List[str]:
             messages.append("PPE status is uncertain.")
         elif reason.startswith("missing_"):
             messages.append(f"Missing {reason.replace('missing_', '').replace('_', ' ')}.")
+        elif reason.startswith("off_shift_"):
+            shift_name = reason.replace("off_shift_", "").replace("_", " ")
+            messages.append(
+                f"Arriving outside {shift_name} shift window."
+            )
     return messages
 
 

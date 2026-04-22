@@ -305,7 +305,7 @@ function Dashboard() {
   const [selectedSourceId, setSelectedSourceId] = useState(
     () => readAppSettings().fleetCamera || "webcam:0",
   );
-  const [frameData, setFrameData] = useState(null);
+  const [hasLiveFrame, setHasLiveFrame] = useState(false);
   const [error, setError] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -318,6 +318,12 @@ function Dashboard() {
   const lastEventKeyRef = useRef(null);
   const lastFrameTsRef = useRef(null);
   const smoothedFpsRef = useRef(0);
+  // Ref-based frame rendering (avoids React re-renders per frame)
+  const liveCanvasRef = useRef(null);
+  const hasLiveFrameRef = useRef(false);
+  const pendingFrameBlobRef = useRef(null);
+  const frameDecodeInFlightRef = useRef(false);
+  const lastFpsUiUpdateRef = useRef(0);
   const cameraOwnerRef = useRef(getCameraOwner("drivers"));
   const latestCameraStateVersionRef = useRef(-1);
   const selectedDriverIdRef = useRef(selectedDriverId);
@@ -400,6 +406,151 @@ function Dashboard() {
     );
   }, [drivers]);
 
+  const updateDisplayedFps = () => {
+    const now = performance.now();
+    if (lastFrameTsRef.current !== null) {
+      const deltaMs = now - lastFrameTsRef.current;
+      if (deltaMs > 0) {
+        const instantFps = 1000 / deltaMs;
+        smoothedFpsRef.current =
+          smoothedFpsRef.current === 0
+            ? instantFps
+            : smoothedFpsRef.current * 0.84 + instantFps * 0.16;
+        if (now - lastFpsUiUpdateRef.current >= 500) {
+          setLiveFps(smoothedFpsRef.current);
+          lastFpsUiUpdateRef.current = now;
+        }
+      }
+    }
+    lastFrameTsRef.current = now;
+  };
+
+  const flushLiveFrame = () => {
+    if (frameDecodeInFlightRef.current) {
+      return;
+    }
+
+    const frameBlob = pendingFrameBlobRef.current;
+    const canvas = liveCanvasRef.current;
+    if (!frameBlob || !canvas) {
+      return;
+    }
+
+    pendingFrameBlobRef.current = null;
+    frameDecodeInFlightRef.current = true;
+
+    const finish = (loaded) => {
+      frameDecodeInFlightRef.current = false;
+
+      if (loaded) {
+        updateDisplayedFps();
+        if (!hasLiveFrameRef.current) {
+          hasLiveFrameRef.current = true;
+          setHasLiveFrame(true);
+        }
+      }
+
+      if (pendingFrameBlobRef.current) {
+        flushLiveFrame();
+      }
+    };
+
+    const drawBitmap = (bitmap) => {
+      const targetCanvas = liveCanvasRef.current;
+      if (!targetCanvas) {
+        bitmap.close();
+        finish(false);
+        return;
+      }
+
+      if (
+        targetCanvas.width !== bitmap.width ||
+        targetCanvas.height !== bitmap.height
+      ) {
+        targetCanvas.width = bitmap.width;
+        targetCanvas.height = bitmap.height;
+      }
+
+      const context = targetCanvas.getContext("2d", {
+        alpha: false,
+        desynchronized: true,
+      });
+      if (!context) {
+        bitmap.close();
+        finish(false);
+        return;
+      }
+
+      context.drawImage(bitmap, 0, 0, targetCanvas.width, targetCanvas.height);
+      bitmap.close();
+      finish(true);
+    };
+
+    if (typeof window.createImageBitmap === "function") {
+      window.createImageBitmap(frameBlob).then(drawBitmap).catch(() => finish(false));
+      return;
+    }
+
+    const image = new Image();
+    const objectUrl = window.URL.createObjectURL(frameBlob);
+    image.onload = () => {
+      const targetCanvas = liveCanvasRef.current;
+      window.URL.revokeObjectURL(objectUrl);
+      if (!targetCanvas) {
+        finish(false);
+        return;
+      }
+      if (
+        targetCanvas.width !== image.naturalWidth ||
+        targetCanvas.height !== image.naturalHeight
+      ) {
+        targetCanvas.width = image.naturalWidth;
+        targetCanvas.height = image.naturalHeight;
+      }
+      const context = targetCanvas.getContext("2d", {
+        alpha: false,
+        desynchronized: true,
+      });
+      if (!context) {
+        finish(false);
+        return;
+      }
+      context.drawImage(image, 0, 0, targetCanvas.width, targetCanvas.height);
+      finish(true);
+    };
+    image.onerror = () => {
+      window.URL.revokeObjectURL(objectUrl);
+      finish(false);
+    };
+    image.src = objectUrl;
+  };
+
+  const queueLiveFrame = (frameBlob) => {
+    pendingFrameBlobRef.current = frameBlob;
+    flushLiveFrame();
+  };
+
+  const clearLivePreview = () => {
+    pendingFrameBlobRef.current = null;
+    frameDecodeInFlightRef.current = false;
+    if (liveCanvasRef.current) {
+      const context = liveCanvasRef.current.getContext("2d");
+      if (context) {
+        context.clearRect(0, 0, liveCanvasRef.current.width, liveCanvasRef.current.height);
+      }
+    }
+    hasLiveFrameRef.current = false;
+    setHasLiveFrame(false);
+  };
+
+  const resetLiveMetrics = () => {
+    clearLivePreview();
+    setLiveFps(0);
+    lastFrameTsRef.current = null;
+    smoothedFpsRef.current = 0;
+    lastFpsUiUpdateRef.current = 0;
+  };
+
   useEffect(() => {
     let isDisposed = false;
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -408,31 +559,34 @@ function Dashboard() {
     const connectLive = () => {
       if (isDisposed) return;
       const ws = new WebSocket(`${wsBase}/ws/live`);
+      ws.binaryType = "blob";
       ws.onopen = () => setWsConnected(true);
       ws.onclose = () => {
         setWsConnected(false);
+        clearLivePreview();
         if (!isDisposed)
           liveReconnectRef.current = setTimeout(connectLive, 2000);
       };
       ws.onerror = (e) => console.error("[Dashboard] Live WS error:", e);
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "frame" && msg.data) {
-            const now = performance.now();
-            if (lastFrameTsRef.current !== null) {
-              const deltaMs = now - lastFrameTsRef.current;
-              if (deltaMs > 0) {
-                const instantFps = 1000 / deltaMs;
-                smoothedFpsRef.current =
-                  smoothedFpsRef.current === 0
-                    ? instantFps
-                    : smoothedFpsRef.current * 0.75 + instantFps * 0.25;
-                setLiveFps(smoothedFpsRef.current);
-              }
+          if (typeof event.data === "string") {
+            const msg = JSON.parse(event.data);
+            if (msg.type !== "frame" || !msg.data) {
+              return;
             }
-            lastFrameTsRef.current = now;
-            setFrameData(msg.data);
+            const byteString = window.atob(msg.data);
+            const bytes = new Uint8Array(byteString.length);
+            for (let index = 0; index < byteString.length; index += 1) {
+              bytes[index] = byteString.charCodeAt(index);
+            }
+            queueLiveFrame(new Blob([bytes], { type: "image/jpeg" }));
+          } else {
+            const frameBlob =
+              event.data instanceof Blob
+                ? event.data
+                : new Blob([event.data], { type: "image/jpeg" });
+            queueLiveFrame(frameBlob);
           }
         } catch (e) {
           console.error("[Dashboard] Live parse error", e);
@@ -495,6 +649,7 @@ function Dashboard() {
       isDisposed = true;
       if (liveReconnectRef.current) clearTimeout(liveReconnectRef.current);
       if (eventsReconnectRef.current) clearTimeout(eventsReconnectRef.current);
+      clearLivePreview();
       if (liveWsRef.current) liveWsRef.current.close();
       if (eventsWsRef.current) eventsWsRef.current.close();
     };
@@ -606,6 +761,9 @@ function Dashboard() {
         cameraOwnerRef.current,
       );
       applyCameraState(result);
+      if (result?.source_type && result?.source_id) {
+        setSelectedSourceId(`${result.source_type}:${result.source_id}`);
+      }
       if (result.error) setError(result.error);
       else {
         const startedAt = new Date();
@@ -637,17 +795,18 @@ function Dashboard() {
     try {
       setError(null);
       const result = await stopCamera(cameraOwnerRef.current);
-      setFrameData(null);
-      setLiveFps(0);
-      lastFrameTsRef.current = null;
-      smoothedFpsRef.current = 0;
+      resetLiveMetrics();
       endFleetSession(sessionIdsById[selectedDriver.id]);
       setDepartureTimesById((prev) => ({ ...prev, [selectedDriver.id]: null }));
       setSessionIdsById((prev) => ({ ...prev, [selectedDriver.id]: null }));
       applyCameraState(result);
+      if (result.error) {
+        setError(result.error);
+      }
     } catch (e) {
       console.error("[Dashboard] Failed to stop camera:", e);
-      setError("Failed to stop camera");
+      resetLiveMetrics();
+      setError(e.message || "Failed to stop camera");
       setDepartureTimesById((prev) => ({ ...prev, [selectedDriver.id]: null }));
       setCameraState({
         active: false,
@@ -665,12 +824,9 @@ function Dashboard() {
     setIsStarting(false);
     setError(null);
     setCameraState(null);
-    setFrameData(null);
     setDriverEventsById((prev) => ({ ...prev, [selectedDriver.id]: [] }));
     setDepartureTimesById((prev) => ({ ...prev, [selectedDriver.id]: null }));
-    setLiveFps(0);
-    lastFrameTsRef.current = null;
-    smoothedFpsRef.current = 0;
+    resetLiveMetrics();
     setSessionIdsById((prev) => ({ ...prev, [selectedDriver.id]: null }));
   };
 
@@ -796,13 +952,11 @@ function Dashboard() {
               </span>
             </div>
             <div className="relative aspect-video bg-[var(--color-bg-deepest)]">
-              {frameData ? (
-                <img
-                  src={`data:image/jpeg;base64,${frameData}`}
-                  alt="Live feed"
-                  className="h-full w-full object-contain"
-                />
-              ) : (
+              <canvas
+                ref={liveCanvasRef}
+                className={`h-full w-full object-contain ${hasLiveFrame ? "block" : "hidden"}`}
+              />
+              {!hasLiveFrame && (
                 <div className="flex h-full items-center justify-center">
                   <div className="text-center">
                     <VideoIcon size={48} className="mx-auto mb-4 text-muted" />

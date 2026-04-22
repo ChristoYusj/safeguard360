@@ -606,7 +606,11 @@ def parse_embedding_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
 
 def serialize_person(person: Person) -> Dict[str, Any]:
     embedding_payload = parse_embedding_payload(person.embedding)
-    profile = read_person_profile(person.id)
+    # Prefer DB-stored shift_id; fall back to legacy disk profile for smooth migration
+    shift_id = person.shift_id if hasattr(person, "shift_id") and person.shift_id is not None else None
+    if shift_id is None:
+        profile = read_person_profile(person.id)
+        shift_id = profile.get("shift_id")
     return {
         "id": person.id,
         "name": person.name,
@@ -624,5 +628,5 @@ def serialize_person(person: Person) -> Dict[str, Any]:
         "embedding_model": embedding_payload.get("model"),
         "selection_strategy": embedding_payload.get("selection_strategy"),
         "discarded_media": embedding_payload.get("discarded_media", []),
-        "shift_id": profile.get("shift_id"),
+        "shift_id": shift_id,
     }

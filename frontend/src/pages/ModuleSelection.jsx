@@ -5,8 +5,18 @@
 
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
+import { useAuth } from "../contexts/AuthContext";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
+import {
+  canAccessAttendance,
+  canAccessChatbot,
+  canAccessDrivers,
+  canAccessEnrollment,
+  canAccessLogs,
+  canAccessSettings,
+  canAccessUserManagement,
+} from "../utils/accessControl";
 import {
   DriversIcon,
   AttendanceIcon,
@@ -48,50 +58,84 @@ const headerVariants = {
 };
 
 function ModuleSelection() {
+  const { user } = useAuth();
   const { darkMode, toggleDarkMode } = useThemePreference();
   const { t } = useAppLanguage();
   const modules = [
-    {
+    canAccessDrivers(user?.role)
+      ? {
       id: "drivers",
       name: t("drivers_module"),
       description: t("drivers_module_description"),
       route: "/drivers",
       Icon: DriversIcon,
       accent: "var(--color-accent-primary)",
-    },
-    {
+    }
+      : null,
+    canAccessAttendance(user?.role)
+      ? {
       id: "attendance",
       name: t("attendance_ppe"),
       description: t("attendance_module_description"),
       route: "/attendance",
       Icon: AttendanceIcon,
       accent: "var(--color-accent-secondary)",
-    },
-    {
+    }
+      : null,
+    canAccessLogs(user?.role)
+      ? {
       id: "logs",
       name: t("logs"),
       description: t("logs_module_description"),
       route: "/logs",
       Icon: LogsIcon,
       accent: "var(--color-info)",
-    },
-    {
+    }
+      : null,
+    canAccessEnrollment(user?.role)
+      ? {
+      id: "enrollment",
+      name: "Enrollment",
+      description: "Manage enrolled workers and face-recognition media.",
+      route: "/enrollment",
+      Icon: AttendanceIcon,
+      accent: "var(--color-warning)",
+    }
+      : null,
+    canAccessUserManagement(user?.role)
+      ? {
+      id: "user-management",
+      name: "User Management",
+      description: "Approve operator accounts, manage access roles, and review the audit log.",
+      route: "/user-management",
+      Icon: SettingsIcon,
+      accent: "var(--color-success)",
+    }
+      : null,
+    canAccessChatbot(user?.role)
+      ? {
       id: "chatbot",
       name: t("ai_chatbot"),
       description: t("ai_chatbot_description"),
       route: "/ai-chatbot",
       Icon: ChatbotIcon,
       accent: "var(--color-success)",
-    },
-    {
+    }
+      : null,
+    canAccessSettings(user?.role)
+      ? {
       id: "settings",
       name: t("settings"),
-      description: t("settings_module_description"),
+      description:
+        user?.role === "admin"
+          ? t("settings_module_description")
+          : "Manage your signed-in account, security settings, and two-factor authentication.",
       route: "/settings",
       Icon: SettingsIcon,
       accent: "var(--color-text-tertiary)",
-    },
-  ];
+    }
+      : null,
+  ].filter(Boolean);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-base">

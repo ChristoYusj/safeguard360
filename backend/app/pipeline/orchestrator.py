@@ -2,13 +2,15 @@
 Processing Orchestrator
 Main frame processing loop.
 """
-import asyncio
+import logging
 import threading
 import time
 from typing import Optional, Callable, List
 
 from app.camera.manager import camera_manager, frame_to_base64, Frame
-from app.services.events import event_service
+
+
+logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -94,18 +96,11 @@ class Orchestrator:
         annotations = []
         mode = camera_manager.mode
         
-        # Placeholder for AI detection
-        # In gate mode: run face + PPE detection
-        # In driver mode: run fatigue + distraction + seatbelt detection
-        
+        # Legacy placeholder path. The live system now performs gate and driver
+        # analysis inside the dedicated camera manager services instead of here.
         if mode == "gate":
-            # TODO: Face detection
-            # TODO: PPE detection
             pass
         elif mode == "driver":
-            # TODO: Fatigue detection
-            # TODO: Distraction detection
-            # TODO: Seatbelt detection
             pass
         
         # Call any registered callbacks
@@ -114,8 +109,8 @@ class Orchestrator:
                 result = callback(frame, mode)
                 if result:
                     annotations.extend(result)
-            except Exception as e:
-                print(f"Frame callback error: {e}")
+            except Exception:
+                logger.exception("Frame callback failed")
         
         return annotations
     
@@ -135,8 +130,8 @@ class Orchestrator:
                 "annotations": annotations
             }
             self.broadcast_callback("live", message)
-        except Exception as e:
-            print(f"Broadcast frame error: {e}")
+        except Exception:
+            logger.exception("Broadcast frame failed")
     
     def _broadcast_state(self) -> None:
         """Broadcast system state."""
@@ -150,8 +145,8 @@ class Orchestrator:
                 "camera": state.to_dict()
             }
             self.broadcast_callback("events", message)
-        except Exception as e:
-            print(f"Broadcast state error: {e}")
+        except Exception:
+            logger.exception("Broadcast state failed")
 
 
 # Global instance

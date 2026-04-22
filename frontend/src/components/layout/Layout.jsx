@@ -9,6 +9,17 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../contexts/AuthContext";
 import { useThemePreference } from "../../hooks/useThemePreference";
 import { useAppLanguage } from "../../contexts/AppLanguageContext";
+import GlobalAlertBanner from "./GlobalAlertBanner";
+import {
+  canAccessAttendance,
+  canAccessChatbot,
+  canAccessDrivers,
+  canAccessEnrollment,
+  canAccessLogs,
+  canAccessSettings,
+  canAccessUserManagement,
+  getRoleLabel,
+} from "../../utils/accessControl";
 import {
   SteeringWheelIcon,
   AttendanceIcon,
@@ -46,13 +57,28 @@ function Layout() {
   const { darkMode, toggleDarkMode } = useThemePreference();
   const { locale, t } = useAppLanguage();
   const navItems = [
-    { path: "/drivers", label: t("fleet_monitoring"), icon: SteeringWheelIcon },
-    { path: "/attendance", label: t("attendance_ppe"), icon: AttendanceIcon },
-    { path: "/enrollment", label: "Enrollment", icon: UsersIcon },
-    { path: "/logs", label: t("logs"), icon: LogsIcon },
-    { path: "/ai-chatbot", label: t("ai_chatbot"), icon: ChatbotIcon },
-    { path: "/settings", label: t("settings"), icon: SettingsIcon },
-  ];
+    canAccessDrivers(user?.role)
+      ? { path: "/drivers", label: t("fleet_monitoring"), icon: SteeringWheelIcon }
+      : null,
+    canAccessAttendance(user?.role)
+      ? { path: "/attendance", label: t("attendance_ppe"), icon: AttendanceIcon }
+      : null,
+    canAccessLogs(user?.role)
+      ? { path: "/logs", label: t("logs"), icon: LogsIcon }
+      : null,
+    canAccessEnrollment(user?.role)
+      ? { path: "/enrollment", label: "Enrollment", icon: UsersIcon }
+      : null,
+    canAccessUserManagement(user?.role)
+      ? { path: "/user-management", label: "User Management", icon: UsersIcon }
+      : null,
+    canAccessChatbot(user?.role)
+      ? { path: "/ai-chatbot", label: t("ai_chatbot"), icon: ChatbotIcon }
+      : null,
+    canAccessSettings(user?.role)
+      ? { path: "/settings", label: t("settings"), icon: SettingsIcon }
+      : null,
+  ].filter(Boolean);
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
   const [currentTime, setCurrentTime] = useState(() => formatHeaderTime(locale));
 
@@ -83,6 +109,9 @@ function Layout() {
 
   return (
     <div className="flex min-h-screen bg-base">
+      {/* Global alert overlay — sits above every page, covers all routes. */}
+      <GlobalAlertBanner />
+
       {/* Sidebar */}
       <motion.aside
         initial={false}
@@ -229,7 +258,7 @@ function Layout() {
                 Signed in as operator
               </p>
               <p className="mt-1 text-sm text-secondary">
-                {user?.email || "No operator signed in"}
+                {[user?.email, getRoleLabel(user?.role)].filter(Boolean).join(" • ") || "No operator signed in"}
               </p>
             </motion.div>
 

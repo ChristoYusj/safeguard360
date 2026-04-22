@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
     # Server
-    DEBUG: bool = True
+    DEBUG: bool = False
     HOST: str = "127.0.0.1"
     PORT: int = 8000
 
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Camera
     DEFAULT_CAMERA: str = "webcam"
     CAMERA_RESOLUTION: str = "640,480"
-    FPS_LIMIT: int = 15
+    FPS_LIMIT: int = 30
 
     # Thresholds
     FACE_MATCH_THRESHOLD: float = 0.6
@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     ACTUATOR_TYPE: str = "stub"
     ARDUINO_PORT: str = ""
 
+    # AI Safety Chatbot (OpenAI). Leave OPENAI_API_KEY empty to disable —
+    # the endpoint will return a clear "not configured" error and the UI
+    # will show a banner explaining how to enable it.
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    # Groq is OpenAI-compatible; when GROQ_API_KEY is set the chatbot
+    # uses it in preference to OpenAI. Free tier, fast inference.
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    CHATBOT_MAX_HISTORY: int = 20
+    CHATBOT_MAX_TOKENS: int = 600
+
     # CORS / Cookies
     CORS_ALLOWED_ORIGINS: str = ""
     COOKIE_SECURE: bool = False
@@ -56,12 +68,13 @@ class Settings(BaseSettings):
     AUTH_MAX_FAILED_LOGIN_ATTEMPTS: int = 5
     AUTH_MAX_FAILED_IP_ATTEMPTS: int = 5
     AUTH_FAILED_LOGIN_WINDOW_MINUTES: int = 15
-    AUTH_LOCKOUT_MINUTES: int = 15
+    AUTH_LOCKOUT_MINUTES: int = 5
 
     # Admin / Email
     ADMIN_EMAIL: str = ""
     RESEND_API_KEY: str = ""
     RESEND_FROM_EMAIL: str = ""
+    FRONTEND_APP_URL: str = ""
     TOTP_ENCRYPTION_KEY: str = ""
 
     # Bootstrap operator
@@ -82,6 +95,20 @@ class Settings(BaseSettings):
         return self.DATABASE_URL
 
     @property
+    def resolved_models_dir(self) -> str:
+        """Absolute models directory.
+
+        Resolves MODELS_DIR relative to the repo root so inference code works
+        the same whether the server was launched from the repo root or from
+        ``backend/`` (uvicorn --reload uses different CWDs).
+        """
+        raw = (self.MODELS_DIR or "").strip() or "./data/models"
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / raw
+        return str(candidate.resolve())
+
+    @property
     def cors_allowed_origins(self) -> list[str]:
         return [
             origin.strip()
@@ -92,6 +119,19 @@ class Settings(BaseSettings):
     @property
     def bootstrap_admin_enabled(self) -> bool:
         return bool(self.ADMIN_EMAIL and self.BOOTSTRAP_ADMIN_PASSWORD)
+
+    @property
+    def missing_required_auth_settings(self) -> list[str]:
+        required = {
+            "JWT_ACCESS_SECRET": self.JWT_ACCESS_SECRET,
+            "JWT_REFRESH_SECRET": self.JWT_REFRESH_SECRET,
+            "JWT_APPROVAL_SECRET": self.JWT_APPROVAL_SECRET,
+            "ADMIN_EMAIL": self.ADMIN_EMAIL,
+            "RESEND_API_KEY": self.RESEND_API_KEY,
+            "RESEND_FROM_EMAIL": self.RESEND_FROM_EMAIL,
+            "TOTP_ENCRYPTION_KEY": self.TOTP_ENCRYPTION_KEY,
+        }
+        return [key for key, value in required.items() if not str(value or "").strip()]
 
     model_config = SettingsConfigDict(
         env_file=REPO_ROOT / ".env",

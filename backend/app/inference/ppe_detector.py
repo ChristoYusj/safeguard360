@@ -3,6 +3,8 @@ PPE detection adapter for gate compliance.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, Iterable, Optional
 
@@ -38,6 +40,26 @@ class PpeDetector:
             "import_error": self._import_error or None,
         }
 
+    def _resolve_model_path(self) -> str:
+        """Resolve PPE_MODEL against MODELS_DIR when it's a bare filename.
+
+        Lets the user drop a Roboflow-exported .pt file into data/models/
+        and reference it by name in .env (e.g. PPE_MODEL=construction-safety.pt)
+        without hard-coding a full path. Falls back to the raw value so
+        that canonical names like yolo11n.pt still auto-download via
+        ultralytics' hub resolver.
+        """
+        raw = (self.settings.PPE_MODEL or "").strip()
+        if not raw:
+            return raw
+        # If the value already contains a separator, trust it as-is.
+        if os.sep in raw or "/" in raw or os.path.isabs(raw):
+            return raw
+        candidate = Path(self.settings.resolved_models_dir) / raw
+        if candidate.exists():
+            return str(candidate)
+        return raw
+
     def _ensure_model(self) -> None:
         if self._model is not None or not self.available:
             return
@@ -48,7 +70,7 @@ class PpeDetector:
 
             from ultralytics import YOLO  # pragma: no cover - optional dep
 
-            self._model = YOLO(self.settings.PPE_MODEL)
+            self._model = YOLO(self._resolve_model_path())
 
     @staticmethod
     def _expand_face_bbox(face_bbox, frame_width: int, frame_height: int):
@@ -88,7 +110,19 @@ class PpeDetector:
 
     @staticmethod
     def _map_detection_label(label: str) -> Optional[str]:
-        normalized = label.strip().lower().replace("-", " ")
+        normalized = label.strip().lower().replace("-", " ").replace("_", " ")
+        # Strip doubled whitespace and collapse.
+        normalized = " ".join(normalized.split())
+
+        # Reject explicit "negative" classes used by datasets like Roboflow's
+        # construction-safety-gsnvb ("NO-Hardhat", "NO-Safety Vest", etc.).
+        # Without this, "hardhat" in "no hardhat" would erroneously map to
+        # helmet and silently pass a non-compliant worker.
+        if normalized.startswith("no ") or " no " in f" {normalized} ":
+            return None
+        if normalized.startswith("missing") or "without" in normalized:
+            return None
+
         if any(token in normalized for token in ["helmet", "hardhat", "hard hat"]):
             return "helmet"
         if any(

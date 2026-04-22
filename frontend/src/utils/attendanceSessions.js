@@ -52,6 +52,48 @@ function formatPpeReviewNote(review) {
   );
 }
 
+function hasTrackedPpeRequirements(ppeDetails) {
+  return (normalizePpeDetails(ppeDetails).required_items || []).length > 0;
+}
+
+function hasRegisteredPpeViolation({ reviewReasons = [], ppeDetails }) {
+  const normalizedPpeDetails = normalizePpeDetails(ppeDetails);
+  const missingItems = normalizedPpeDetails.missing_items || [];
+
+  if (!hasTrackedPpeRequirements(normalizedPpeDetails)) {
+    return false;
+  }
+
+  return (
+    normalizedPpeDetails.status === "non_compliant" ||
+    normalizedPpeDetails.status === "uncertain" ||
+    missingItems.length > 0 ||
+    reviewReasons.includes("uncertain_ppe") ||
+    reviewReasons.some((reason) => reason.startsWith("missing_")) ||
+    normalizedPpeDetails.override_reason_type === "ppe_non_compliance" ||
+    normalizedPpeDetails.override_reason_type === "combined"
+  );
+}
+
+function buildPpeViolationSummary({ reviewReasons = [], ppeDetails, decisionNote = null }) {
+  const normalizedPpeDetails = normalizePpeDetails(ppeDetails);
+  const missingItems = normalizedPpeDetails.missing_items || [];
+
+  if (missingItems.length > 0) {
+    return `Missing ${missingItems.join(", ")}`;
+  }
+  if (reviewReasons.includes("uncertain_ppe")) {
+    return "PPE status could not be confirmed automatically.";
+  }
+  if (normalizedPpeDetails.status === "non_compliant") {
+    return "Required PPE was not detected.";
+  }
+  if (normalizedPpeDetails.status === "uncertain") {
+    return "PPE needed operator confirmation.";
+  }
+  return decisionNote || "PPE violation recorded.";
+}
+
 function usesManualOverride(record, matchedReview) {
   return record?.log_method === "MANUAL" || Boolean(matchedReview);
 }
@@ -195,6 +237,73 @@ function buildRosterEvent(record, personsById, matchedReview) {
       record.log_method ||
       (matchedReview ? "MANUAL" : "AUTO"),
     manualOverrideReview: matchedReview || null,
+    snapshotDataUrl: record.snapshot_data_url || null,
+  };
+}
+
+function buildRosterViolationFromReview(review, personsById) {
+  if (!review?.person_id) {
+    return null;
+  }
+
+  const reviewReasons = normalizeReviewReasons(review);
+  const ppeDetails = normalizePpeDetails(review.ppe_details);
+  if (!hasRegisteredPpeViolation({ reviewReasons, ppeDetails })) {
+    return null;
+  }
+
+  const person = personsById.get(review.person_id) || null;
+  const resolvedShiftId =
+    person?.shift_id || getShiftIdForTimestamp(review.decided_at || review.timestamp);
+  const decision = review.status === "DENIED" ? "Entry denied" : "Override granted";
+
+  return {
+    id: `review:${review.id}`,
+    personId: review.person_id,
+    shiftId: resolvedShiftId,
+    timestamp: review.decided_at || review.timestamp || null,
+    decision,
+    summary: buildPpeViolationSummary({
+      reviewReasons,
+      ppeDetails,
+      decisionNote: review.decision_note || null,
+    }),
+    ppeDetails,
+    reviewReasons,
+    snapshotDataUrl: review.snapshot_data_url || null,
+  };
+}
+
+function buildRosterViolationFromRecord(record, personsById, matchedReview = null) {
+  if (!record?.person_id || record.direction !== "ENTRY") {
+    return null;
+  }
+
+  if (matchedReview) {
+    return buildRosterViolationFromReview(matchedReview, personsById);
+  }
+
+  const ppeDetails = normalizePpeDetails(record.ppe_details);
+  if (
+    record.ppe_compliant !== false ||
+    !hasRegisteredPpeViolation({ reviewReasons: [], ppeDetails })
+  ) {
+    return null;
+  }
+
+  const person = personsById.get(record.person_id) || null;
+  const resolvedShiftId = person?.shift_id || getShiftIdForTimestamp(record.timestamp);
+
+  return {
+    id: `attendance:${record.id}`,
+    personId: record.person_id,
+    shiftId: resolvedShiftId,
+    timestamp: record.timestamp || null,
+    decision: "Violation logged",
+    summary: buildPpeViolationSummary({ ppeDetails }),
+    ppeDetails,
+    reviewReasons: [],
+    snapshotDataUrl: record.snapshot_data_url || null,
   };
 }
 
@@ -207,6 +316,7 @@ function createEmptyRosterCard(person) {
     shiftId: person?.shift_id || null,
     latestCheckIn: null,
     latestCheckOut: null,
+    registeredViolations: [],
   };
 }
 
@@ -299,6 +409,43 @@ export function buildAttendanceSessionState({
       toTimestamp(left.checkOut?.timestamp || left.checkIn?.timestamp),
   );
   const rosterCardsByPerson = new Map();
+  const rosterViolationIdsByPerson = new Map();
+
+  const upsertRosterCard = (rosterKey, fallback = {}) => {
+    const existingCard = rosterCardsByPerson.get(rosterKey);
+    if (existingCard) {
+      return existingCard;
+    }
+
+    const nextCard = {
+      id: rosterKey,
+      personId: fallback.personId || null,
+      personName: fallback.personName || "Unknown worker",
+      employeeId: fallback.employeeId || null,
+      shiftId: fallback.shiftId || null,
+      latestCheckIn: null,
+      latestCheckOut: null,
+      registeredViolations: [],
+    };
+    rosterCardsByPerson.set(rosterKey, nextCard);
+    return nextCard;
+  };
+
+  const appendRosterViolation = (rosterKey, violation, fallback = {}) => {
+    if (!violation) {
+      return;
+    }
+
+    const existingIds = rosterViolationIdsByPerson.get(rosterKey) || new Set();
+    if (existingIds.has(violation.id)) {
+      return;
+    }
+
+    existingIds.add(violation.id);
+    rosterViolationIdsByPerson.set(rosterKey, existingIds);
+    const card = upsertRosterCard(rosterKey, fallback);
+    card.registeredViolations = [...card.registeredViolations, violation];
+  };
 
   persons
     .filter((person) => person.is_active !== false)
@@ -311,17 +458,12 @@ export function buildAttendanceSessionState({
 
   activeSessions.forEach((session) => {
     const rosterKey = session.personId || `person-name:${session.personName || session.id}`;
-    const existingCard =
-      rosterCardsByPerson.get(rosterKey) ||
-      {
-        id: rosterKey,
-        personId: session.personId || null,
-        personName: session.personName || "Unknown worker",
-        employeeId: session.employeeId || null,
-        shiftId: session.shiftId || null,
-        latestCheckIn: null,
-        latestCheckOut: null,
-      };
+    const existingCard = upsertRosterCard(rosterKey, {
+      personId: session.personId || null,
+      personName: session.personName || "Unknown worker",
+      employeeId: session.employeeId || null,
+      shiftId: session.shiftId || null,
+    });
 
     existingCard.personId = session.personId || existingCard.personId;
     existingCard.personName = session.personName || existingCard.personName;
@@ -337,6 +479,92 @@ export function buildAttendanceSessionState({
     existingCard.latestCheckOut = null;
 
     rosterCardsByPerson.set(rosterKey, existingCard);
+  });
+
+  sortedCompletedSessions.forEach((session) => {
+    const rosterKey = session.personId || `person-name:${session.personName || session.id}`;
+    const existingCard = upsertRosterCard(rosterKey, {
+      personId: session.personId || null,
+      personName: session.personName || "Unknown worker",
+      employeeId: session.employeeId || null,
+      shiftId: session.shiftId || null,
+    });
+
+    if (existingCard.latestCheckIn) {
+      return;
+    }
+
+    const hasNewerCheckout =
+      !existingCard.latestCheckOut ||
+      toTimestamp(session.checkOut?.timestamp) >
+        toTimestamp(existingCard.latestCheckOut?.timestamp);
+
+    if (!hasNewerCheckout) {
+      return;
+    }
+
+    existingCard.personId = session.personId || existingCard.personId;
+    existingCard.personName = session.personName || existingCard.personName;
+    existingCard.employeeId = session.employeeId || existingCard.employeeId;
+    existingCard.shiftId = session.shiftId || existingCard.shiftId;
+    existingCard.latestCheckIn = session.checkIn
+      ? buildRosterEvent(
+          session.checkIn,
+          personsById,
+          session.checkIn.manualOverrideReview,
+        )
+      : null;
+    existingCard.latestCheckOut = session.checkOut
+      ? buildRosterEvent(
+          session.checkOut,
+          personsById,
+          session.checkOut.manualOverrideReview,
+        )
+      : null;
+  });
+
+  grantedRecords.forEach((record) => {
+    const rosterKey = record.person_id || `person-name:${record.person_name || record.id}`;
+    appendRosterViolation(
+      rosterKey,
+      buildRosterViolationFromRecord(record, personsById, record.manualOverrideReview),
+      {
+        personId: record.person_id || null,
+        personName: record.person_name || "Unknown worker",
+        employeeId: record.person_employee_id || null,
+        shiftId:
+          personsById.get(record.person_id)?.shift_id || getShiftIdForTimestamp(record.timestamp),
+      },
+    );
+  });
+
+  gateReviews
+    .filter((review) => review.status !== "PENDING")
+    .forEach((review) => {
+      if (review.status === "APPROVED" && usedReviewIds.has(review.id)) {
+        return;
+      }
+
+      const rosterKey = review.person_id || `person-name:${review.person_name || review.id}`;
+      appendRosterViolation(
+        rosterKey,
+        buildRosterViolationFromReview(review, personsById),
+        {
+          personId: review.person_id || null,
+          personName: review.person_name || "Unknown worker",
+          employeeId: review.person_employee_id || null,
+          shiftId:
+            personsById.get(review.person_id)?.shift_id ||
+            getShiftIdForTimestamp(review.decided_at || review.timestamp),
+        },
+      );
+    });
+
+  rosterCardsByPerson.forEach((card) => {
+    card.registeredViolations.sort(
+      (leftViolation, rightViolation) =>
+        toTimestamp(rightViolation.timestamp) - toTimestamp(leftViolation.timestamp),
+    );
   });
 
   const rosterCards = [...rosterCardsByPerson.values()].sort((left, right) => {

@@ -371,12 +371,14 @@ function Enrollment() {
                   className="input h-12"
                 >
                   <option value="">Choose from attendance workers</option>
-                  {savedWorkers.map((worker) => (
-                    <option key={worker.id} value={worker.id}>
-                      {worker.name}
-                      {worker.badgeId ? ` • ${worker.badgeId}` : ""}
-                    </option>
-                  ))}
+                  {savedWorkers
+                    .filter((worker) => worker.isActive !== false)
+                    .map((worker) => (
+                      <option key={worker.id} value={worker.id}>
+                        {worker.name}
+                        {worker.badgeId ? ` • ${worker.badgeId}` : ""}
+                      </option>
+                    ))}
                 </select>
                 {savedWorkers.length === 0 ? (
                   <p className="mt-3 text-sm text-secondary">
@@ -521,9 +523,11 @@ function Enrollment() {
                 Enrolled Workers
               </h2>
             </div>
-            <span className="badge badge-accent">{persons.length} workers</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="badge badge-accent">{persons.length} workers</span>
+            </div>
           </div>
-          <div className="panel__content space-y-4">
+          <div className="panel__content max-h-[600px] space-y-4 overflow-y-auto">
             {persons.length > 0 ? (
               persons.map((person) => (
                 <article

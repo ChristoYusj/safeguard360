@@ -1,4 +1,4 @@
-# Attendance Upgrade TODO
+# Attendance Upgrade Backlog
 
 Implementation rule for this track:
 - Finish one feature in two passes before moving to the next feature.

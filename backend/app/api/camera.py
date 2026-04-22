@@ -1,14 +1,20 @@
 """
 Camera API Endpoints
 """
-from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
+from __future__ import annotations
+
+import logging
+from typing import List, Optional
+
 import cv2
+from fastapi import APIRouter, Body, HTTPException, Request
+from pydantic import BaseModel
 
 from app.camera.manager import camera_manager
+from app.services.rbac import ADMIN_ROLE, FLEET_OPERATOR_ROLE, GENERAL_MANAGER_ROLE, SAFETY_OPERATOR_ROLE
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class CameraStartRequest(BaseModel):
@@ -50,18 +56,42 @@ def _build_camera_response():
         payload["gate"] = camera_manager.get_gate_state()
     elif state.mode == "driver":
         payload["driver"] = camera_manager.get_driver_state()
+
     return CameraStateResponse(**payload)
+
+
+def _get_request_role(request: Request) -> str | None:
+    current_user = getattr(request.state, "user", None)
+    return getattr(current_user, "role", None)
+
+
+def _assert_camera_access(request: Request, *, owner_module: Optional[str], mode: Optional[str] = None) -> None:
+    role = _get_request_role(request)
+    if role in {GENERAL_MANAGER_ROLE, ADMIN_ROLE}:
+        return
+
+    if role == FLEET_OPERATOR_ROLE:
+        if owner_module != "drivers":
+            raise HTTPException(status_code=403, detail="Forbidden.")
+        if mode is not None and mode not in {"driver", "idle"}:
+            raise HTTPException(status_code=403, detail="Forbidden.")
+        return
+
+    if role == SAFETY_OPERATOR_ROLE:
+        if owner_module != "attendance":
+            raise HTTPException(status_code=403, detail="Forbidden.")
+        if mode is not None and mode not in {"gate", "idle"}:
+            raise HTTPException(status_code=403, detail="Forbidden.")
+        return
 
 
 @router.get("/sources", response_model=List[CameraSourceInfo])
 async def list_camera_sources():
     """List available camera sources."""
-    print("[API] GET /camera/sources - scanning indices 0-5...")
     sources = []
     
     # Check for webcams (check indices 0-5)
     for i in range(6):
-        print(f"[API] Testing camera index {i}...", end=" ")
         try:
             cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
             opened = cap.isOpened()
@@ -70,22 +100,14 @@ async def list_camera_sources():
                 # Try to read a frame to confirm it works
                 ret, frame = cap.read()
                 if ret and frame is not None:
-                    h, w = frame.shape[:2]
-                    print(f"OK ({w}x{h})")
                     sources.append(CameraSourceInfo(
                         source_type="webcam",
                         source_id=str(i),
                         name=f"Webcam {i}"
                     ))
-                else:
-                    print("opened but no frame")
                 cap.release()
-            else:
-                print("not available")
         except Exception as e:
-            print(f"error: {e}")
-    
-    print(f"[API] Found {len(sources)} webcam(s)")
+            logger.exception("Camera source probe failed for index %s.", i)
     
     # Add video file option
     sources.append(CameraSourceInfo(
@@ -100,43 +122,43 @@ async def list_camera_sources():
         source_id="",
         name="IP Stream (provide URL)"
     ))
-    
-    print(f"[API] Total sources: {len(sources)}")
-    for s in sources:
-        print(f"[API]   - {s.name} ({s.source_type}:{s.source_id})")
-    
+
     return sources
 
 
 @router.post("/start", response_model=CameraStateResponse)
-async def start_camera(request: CameraStartRequest):
+async def start_camera(request: Request, payload: CameraStartRequest):
     """Start camera capture."""
-    print(f"[API] POST /camera/start: {request.source_type}, {request.source_id}")
+    _assert_camera_access(request, owner_module=payload.owner_module)
     
     success = camera_manager.start(
-        source_type=request.source_type,
-        source_id=request.source_id or "0",
-        owner_module=request.owner_module,
-        owner_token=request.owner_token,
+        source_type=payload.source_type,
+        source_id=payload.source_id or "0",
+        owner_module=payload.owner_module,
+        owner_token=payload.owner_token,
     )
     
     if not success:
         state = camera_manager.get_state()
-        print(f"[API] Camera start failed: {state.error}")
         raise HTTPException(
             status_code=400,
             detail=f"Failed to start camera: {state.error}"
         )
-    
-    print(f"[API] Camera started successfully")
+
     return _build_camera_response()
 
 
 @router.post("/stop", response_model=CameraStateResponse)
-async def stop_camera(request: Optional[CameraControlRequest] = Body(default=None)):
+async def stop_camera(
+    request: Request,
+    payload: Optional[CameraControlRequest] = Body(default=None),
+):
     """Stop camera capture."""
-    print("[API] POST /camera/stop")
-    control_request = request or CameraControlRequest()
+    control_request = payload or CameraControlRequest(
+        owner_module=camera_manager.owner_module,
+        owner_token=camera_manager.owner_token,
+    )
+    _assert_camera_access(request, owner_module=control_request.owner_module, mode="idle")
     if camera_manager.running and not camera_manager.has_control(
         control_request.owner_module,
         control_request.owner_token,
@@ -157,24 +179,29 @@ async def get_camera_state():
 
 @router.post("/mode/{mode}", response_model=CameraStateResponse)
 async def set_camera_mode(
+    http_request: Request,
     mode: str,
     request: Optional[CameraControlRequest] = Body(default=None),
 ):
     """Set processing mode (gate/driver/idle)."""
-    print(f"[API] POST /camera/mode/{mode}")
     if mode not in ["gate", "driver", "idle"]:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid mode: {mode}. Must be gate, driver, or idle."
         )
 
+    control_request = request or CameraControlRequest()
+    _assert_camera_access(
+        http_request,
+        owner_module=control_request.owner_module or camera_manager.owner_module,
+        mode=mode,
+    )
+
     if mode != "idle" and not camera_manager.running:
         raise HTTPException(
             status_code=409,
             detail="Start the camera feed before enabling recognition mode.",
         )
-
-    control_request = request or CameraControlRequest()
     if camera_manager.running and not camera_manager.has_control(
         control_request.owner_module,
         control_request.owner_token,

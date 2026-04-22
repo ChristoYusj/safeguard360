@@ -2,6 +2,7 @@
 FastAPI Application Factory
 """
 import asyncio
+import logging
 import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,10 +14,11 @@ from app.camera.manager import camera_manager
 from app.config.settings import get_settings
 from app.middleware.auth import OperatorAuthMiddleware
 
+logger = logging.getLogger(__name__)
+
 
 async def frame_broadcaster():
     """Background task to broadcast frames and driver events."""
-    print("[Broadcaster] Started")
     frame_count = 0
     last_broadcast_sequence = -1
     last_status_sent_at = 0.0
@@ -26,13 +28,11 @@ async def frame_broadcaster():
             if camera_manager.running:
                 frame_packet = camera_manager.get_latest_frame_packet()
                 if frame_packet and len(manager.live_connections) > 0:
-                    frame_sequence, frame_b64 = frame_packet
+                    frame_sequence, frame_bytes = frame_packet
                     if frame_sequence != last_broadcast_sequence:
-                        await manager.broadcast_frame(frame_b64)
+                        await manager.broadcast_frame(frame_bytes)
                         last_broadcast_sequence = frame_sequence
                         frame_count += 1
-                        if frame_count % 100 == 0:
-                            print(f"[Broadcaster] Sent {frame_count} frames")
 
                 now = time.monotonic()
                 if now - last_status_sent_at >= status_interval_seconds:
@@ -78,19 +78,27 @@ async def frame_broadcaster():
 
             await asyncio.sleep(0.02)
         except Exception as e:
-            print(f"[Broadcaster] Error: {e}")
+            logger.exception("Frame broadcaster error.")
             await asyncio.sleep(1)
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    print("[App] Creating FastAPI application")
     settings = get_settings()
+    missing_auth_settings = settings.missing_required_auth_settings
+    if missing_auth_settings:
+        raise RuntimeError(
+            "Missing required auth configuration: "
+            + ", ".join(sorted(missing_auth_settings))
+        )
 
     app = FastAPI(
         title="SafeGuard 360",
         description="Local-first industrial safety monitoring system",
-        version="0.1.0"
+        version="0.1.0",
+        docs_url="/docs" if settings.DEBUG else None,
+        redoc_url="/redoc" if settings.DEBUG else None,
+        openapi_url="/openapi.json" if settings.DEBUG else None,
     )
 
     app.add_middleware(OperatorAuthMiddleware)
@@ -112,15 +120,12 @@ def create_app() -> FastAPI:
     
     @app.on_event("startup")
     async def startup():
-        print("[App] Startup event")
         init_db()
         # Start frame broadcaster
         asyncio.create_task(frame_broadcaster())
-        print("[App] Ready")
     
     @app.on_event("shutdown")
     async def shutdown():
-        print("[App] Shutdown event")
         camera_manager.stop()
     
     return app

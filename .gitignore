@@ -23,7 +23,6 @@ yarn-error.log*
 .env.*
 .env.local
 *.local
-bridge/.env
 !.env.example
 
 # IDE
@@ -33,17 +32,14 @@ bridge/.env
 *.swo
 *~
 
-# Data (keep structure, ignore content)
-data/models/*
-data/faces/*
-data/snapshots/*
-data/videos/*
+# Databases and model weights — ignore contents, keep structure
 *.db
 *.sqlite
+data/models/*
 !data/models/.gitkeep
-!data/faces/.gitkeep
-!data/snapshots/.gitkeep
-!data/videos/.gitkeep
+
+# Backend runtime data (enrollment thumbnails, attendance snapshots)
+backend/data/
 
 # OS
 .DS_Store
@@ -54,12 +50,6 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Build
+# Build / logs
 frontend/dist/
 *.log
-run-logs/
-backend/data/
-bridge/logs/*
-!bridge/logs/.gitkeep
-bridge/state/*
-!bridge/state/.gitkeep

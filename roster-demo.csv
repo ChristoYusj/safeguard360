@@ -1,0 +1,5 @@
+name,employee_id,shift_id,is_active
+Alice Johnson,EMP-1001,day,true
+Bob Martinez,EMP-1002,swing,true
+Carol Nguyen,EMP-1003,night,true
+David Kim,EMP-1004,day,false

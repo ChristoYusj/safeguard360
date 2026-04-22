@@ -3,6 +3,7 @@ Live gate attendance recognition.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter, deque
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -11,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
+
+logger = logging.getLogger(__name__)
 
 from app.config.settings import get_settings
 from app.db.connection import SessionLocal
@@ -22,13 +25,20 @@ from app.services.gate_compliance import (
     create_event_record,
     get_or_create_gate_policy,
     get_required_ppe_items,
+    is_within_shift,
     normalize_ppe_details,
     normalize_review_reasons,
     ppe_reason_messages,
     serialize_ppe_details,
     serialize_review_reasons,
 )
-from app.services.persons import parse_embedding_payload, write_attendance_snapshot
+from app.services.persons import (
+    calculate_blur_score,
+    calculate_face_area_ratio,
+    calculate_quality_score,
+    parse_embedding_payload,
+    write_attendance_snapshot,
+)
 
 
 @dataclass
@@ -59,9 +69,22 @@ class GateAttendanceRecognizer:
         self.rearm_after_absence_seconds = 2.5
         self.gate_direction_mode = "ENTRY"
         self.analysis_max_width = 384
-        self.overlay_hold_seconds = 1.1
-        self.unknown_overlay_hold_seconds = 0.75
-        self.recent_match_hold_seconds = 1.1
+        # NOTE: these now govern how long the LABEL (name + percentage)
+        # persists on the live bbox when ArcFace hasn't produced a fresh
+        # result yet. Bbox itself is re-detected every frame by MediaPipe.
+        # The match label hold is generous (~3s) so short ArcFace gaps don't
+        # cause the overlay to flicker between "Christo 92%" and the MediaPipe
+        # "Detected 88%" fallback. Unknown overlays clear faster so the UI
+        # doesn't keep showing an "Unknown face" tag after the face leaves.
+        self.overlay_hold_seconds = 3.0
+        self.unknown_overlay_hold_seconds = 0.8
+        # Extended grace window used specifically for "named match" labels
+        # (anything ending in a "%" from ArcFace). If the bbox is still live
+        # and we saw a named match recently, keep that label on-screen even
+        # past overlay_hold_seconds rather than flickering back to MediaPipe's
+        # generic "Detected XX%" tag.
+        self.named_match_hold_seconds = 5.0
+        self.recent_match_hold_seconds = 1.5
         self.unknown_face_confirmations = 1
         self.last_candidate_person_id: Optional[str] = None
         self.last_candidate_streak = 0
@@ -91,10 +114,47 @@ class GateAttendanceRecognizer:
         self.policy_cache_ttl_seconds = 5.0
         self.active_ppe_person_id: Optional[str] = None
         self.ppe_history: Deque[Dict[str, Any]] = deque(maxlen=4)
+        self.ppe_item_detection_counts: Counter[str] = Counter()
+        self.ppe_locked_items: set[str] = set()
+        self.ppe_best_confidences: Dict[str, float] = {}
+        self.ppe_last_details: Dict[str, Any] = normalize_ppe_details({})
+        self.ppe_last_seen_at: float = 0.0
+        self.ppe_lock_required_hits = 3
+        self.ppe_hold_seconds = 3.0
+        # Face quality thresholds for live recognition.
+        # NOTE: operator feedback (Apr 2026) — the quality gate was producing
+        # too many false "face is turned / too far" rejections at live gates,
+        # so the yaw check is disabled and the blur/area floors are kept very
+        # lenient. The ArcFace match threshold itself is the real filter; if a
+        # face is too poor to embed, it simply won't match any enrolled worker.
+        self.min_det_score = 0.30         # InsightFace detection confidence floor (very lenient)
+        self.min_blur_score = 5.0         # Laplacian variance floor (very lenient — motion blur is fine)
+        self.min_face_area_ratio = 0.001  # Face must be >= 0.1% of frame area (very lenient)
+        # Yaw filter disabled: set to a sentinel that no real value will exceed.
+        # Keeping the plumbing in place so the field stays visible in the
+        # overlay payload for debugging, but the guidance path for "turned"
+        # never triggers.
+        self.max_yaw_offset = float("inf")
+        # Unknown-face attempt logging cooldown (prevents flooding the review queue)
+        self.last_unknown_attempt_logged_at: float = 0.0
+        self.unknown_attempt_cooldown_seconds: float = 30.0
         self.gate_state: Dict[str, object] = self._build_gate_state(
             match_status="idle",
             message="Waiting for gate recognition.",
         )
+        # Lightweight live face detector (MediaPipe) used only to track the
+        # bbox smoothly between full ArcFace recognitions.
+        self._live_detector = None
+        self._live_detector_failed = False
+        self._last_live_bbox: Optional[List[float]] = None
+        self._last_live_bbox_at: float = 0.0
+        # Most recent MediaPipe detection confidence (0..1). Used for the
+        # "Detected XX%" tag shown before ArcFace provides a match label.
+        self._last_live_bbox_confidence: float = 0.0
+        # How long to carry a bbox when MediaPipe misses a single frame.
+        # Keep this short (≈3 frames at 20 FPS) so the box doesn't look
+        # "stuck"; just enough to cover one-frame detection misses.
+        self._live_bbox_persist_s: float = 0.15
 
     def get_state_dict(self) -> Dict[str, object]:
         return dict(self.gate_state)
@@ -269,9 +329,39 @@ class GateAttendanceRecognizer:
     def _clear_ppe_history(self) -> None:
         self.active_ppe_person_id = None
         self.ppe_history.clear()
+        self.ppe_item_detection_counts.clear()
+        self.ppe_locked_items.clear()
+        self.ppe_best_confidences.clear()
+        self.ppe_last_details = normalize_ppe_details({})
+        self.ppe_last_seen_at = 0.0
+
+    def _has_live_ppe_session(self, now_ts: float, *, person_id: Optional[str] = None) -> bool:
+        if not self.active_ppe_person_id or self.ppe_last_seen_at <= 0:
+            return False
+        if person_id is not None and self.active_ppe_person_id != person_id:
+            return False
+        return now_ts - self.ppe_last_seen_at <= self.ppe_hold_seconds
+
+    def _get_live_ppe_details(
+        self,
+        now_ts: float,
+        *,
+        person_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._has_live_ppe_session(now_ts, person_id=person_id):
+            return normalize_ppe_details({})
+        return normalize_ppe_details(self.ppe_last_details)
 
     def _summarize_ppe_details(self, details: Dict[str, Any]) -> str:
         missing_items = details.get("missing_items") or []
+        latched_items = details.get("latched_items") or []
+        if latched_items and not missing_items:
+            return "Required PPE confirmed and locked in."
+        if latched_items and missing_items:
+            return (
+                f"Locked: {', '.join(latched_items)}. "
+                f"Still checking {', '.join(item.replace('_', ' ') for item in missing_items)}."
+            )
         if missing_items:
             return f"Missing {', '.join(item.replace('_', ' ') for item in missing_items)}."
         if details.get("status") == "uncertain":
@@ -283,6 +373,7 @@ class GateAttendanceRecognizer:
         *,
         person_id: str,
         raw_details: Dict[str, Any],
+        now_ts: float,
     ) -> Dict[str, Any]:
         details = normalize_ppe_details(raw_details)
         raw_status = details.get("status")
@@ -293,8 +384,27 @@ class GateAttendanceRecognizer:
         if self.active_ppe_person_id != person_id:
             self.active_ppe_person_id = person_id
             self.ppe_history.clear()
+            self.ppe_item_detection_counts.clear()
+            self.ppe_locked_items.clear()
+            self.ppe_best_confidences.clear()
 
         self.ppe_history.append(deepcopy(details))
+        required_items = list(details.get("required_items") or [])
+        detected_items = set(details.get("detected_items") or [])
+
+        for item, confidence in (details.get("detector_confidences") or {}).items():
+            current_confidence = self.ppe_best_confidences.get(item, 0.0)
+            self.ppe_best_confidences[item] = max(current_confidence, float(confidence or 0.0))
+
+        for item in detected_items:
+            self.ppe_item_detection_counts[item] += 1
+            if self.ppe_item_detection_counts[item] >= self.ppe_lock_required_hits:
+                self.ppe_locked_items.add(item)
+
+        merged_detected_items = sorted(detected_items.union(self.ppe_locked_items))
+        merged_missing_items = [
+            item for item in required_items if item not in merged_detected_items
+        ]
         status_counts = Counter(
             item.get("status")
             for item in self.ppe_history
@@ -302,21 +412,35 @@ class GateAttendanceRecognizer:
         )
 
         final_status = raw_status
-        if status_counts.get("non_compliant", 0) >= 2:
+        if required_items and len(merged_missing_items) == 0:
+            final_status = "compliant"
+        elif status_counts.get("non_compliant", 0) >= 2:
             final_status = "non_compliant"
         elif status_counts.get("compliant", 0) >= 2 and status_counts.get("non_compliant", 0) == 0:
             final_status = "compliant"
         elif status_counts.get("uncertain", 0) >= 2:
             final_status = "uncertain"
+        elif self.ppe_locked_items and merged_missing_items:
+            final_status = "non_compliant"
         elif len(self.ppe_history) >= 2 and raw_status != "compliant":
             final_status = "uncertain"
 
+        details["detected_items"] = merged_detected_items
+        details["missing_items"] = merged_missing_items
+        details["detector_confidences"] = {
+            item: self.ppe_best_confidences[item]
+            for item in sorted(self.ppe_best_confidences)
+        }
+        details["latched_items"] = sorted(self.ppe_locked_items)
         details["status"] = final_status
         if final_status == "compliant":
             details["missing_items"] = []
-            details["detector_message"] = "Required PPE detected."
+            details["detector_message"] = "Required PPE confirmed and locked in."
         elif not details.get("detector_message"):
             details["detector_message"] = self._summarize_ppe_details(details)
+        self.ppe_last_details = normalize_ppe_details(details)
+        self.ppe_last_details["latched_items"] = list(details.get("latched_items") or [])
+        self.ppe_last_seen_at = now_ts
         return details
 
     def _evaluate_ppe_for_candidate(
@@ -327,6 +451,7 @@ class GateAttendanceRecognizer:
         frame,
         face_bbox,
         policy: GatePolicy,
+        now_ts: float,
     ) -> Dict[str, Any]:
         if direction != "ENTRY" or (policy.enforce_stage or "ENTRY_ONLY") != "ENTRY_ONLY":
             self._clear_ppe_history()
@@ -347,7 +472,11 @@ class GateAttendanceRecognizer:
             face_bbox,
             get_required_ppe_items(policy),
         )
-        details = self._smooth_ppe_status(person_id=person_id, raw_details=details)
+        details = self._smooth_ppe_status(
+            person_id=person_id,
+            raw_details=details,
+            now_ts=now_ts,
+        )
         if details.get("status") == "unavailable":
             details["detector_message"] = (
                 details.get("detector_message")
@@ -360,6 +489,8 @@ class GateAttendanceRecognizer:
         *,
         review_band_match: bool,
         ppe_details: Dict[str, Any],
+        person: Optional[Person] = None,
+        direction: Optional[str] = None,
     ) -> List[str]:
         reasons: List[str] = []
         if review_band_match:
@@ -374,6 +505,16 @@ class GateAttendanceRecognizer:
                 if reason not in reasons:
                     reasons.append(reason)
 
+        # Flag entries that happen outside the worker's scheduled shift.
+        # Only applies on ENTRY — exits can be any time.
+        if (
+            direction == "ENTRY"
+            and person is not None
+            and getattr(person, "shift_id", None)
+            and not is_within_shift(person.shift_id)
+        ):
+            reasons.append(f"off_shift_{person.shift_id}")
+
         return reasons
 
     def _should_block_for_ppe(
@@ -387,6 +528,44 @@ class GateAttendanceRecognizer:
             return False
         return ppe_details.get("status") in {"non_compliant", "uncertain"}
 
+    def _log_unknown_face_attempt(
+        self,
+        frame,
+        direction: str,
+        confidence: float,
+        timestamp: datetime,
+    ) -> None:
+        """Persist an unrecognised gate attempt as a PENDING GateReview for operator review."""
+        db = SessionLocal()
+        try:
+            review = GateReview(
+                person_id=None,
+                person_name="Unknown",
+                suggested_direction=direction,
+                confidence=confidence,
+                timestamp=timestamp,
+                status="PENDING",
+                review_reasons=serialize_review_reasons(["unknown_person"]),
+                ppe_details=serialize_ppe_details({}),
+            )
+            db.add(review)
+            db.flush()
+
+            snapshot = self._encode_snapshot(frame)
+            if snapshot is not None:
+                image_bytes, mime_type = snapshot
+                review.snapshot_path = write_attendance_snapshot(
+                    review.id,
+                    image_bytes,
+                    mime_type,
+                )
+
+            db.commit()
+        except Exception:
+            pass
+        finally:
+            db.close()
+
     def _log_attendance(
         self,
         person: Person,
@@ -396,6 +575,7 @@ class GateAttendanceRecognizer:
         *,
         ppe_compliant: bool,
         ppe_details: Optional[Dict[str, Any]] = None,
+        frame=None,
     ) -> Attendance:
         db = SessionLocal()
         try:
@@ -426,9 +606,67 @@ class GateAttendanceRecognizer:
             db.refresh(record)
             self.on_site_cache_ids = set()
             self.on_site_cache_loaded_at = 0.0
+
+            # Capture and save an audit snapshot for this attendance event
+            if frame is not None:
+                try:
+                    snapshot = self._encode_snapshot(frame)
+                    if snapshot:
+                        image_bytes, mime_type = snapshot
+                        snapshot_path = write_attendance_snapshot(record.id, image_bytes, mime_type)
+                        record.snapshot_path = snapshot_path
+                        db.commit()
+                except Exception:
+                    pass  # Snapshot failure must never block attendance logging
+
+            self._record_ppe_pass_event(
+                db=db,
+                person=person,
+                direction=direction,
+                attendance=record,
+                ppe_details=ppe_details,
+            )
+            db.commit()
+
             return record
         finally:
             db.close()
+
+    def _record_ppe_pass_event(
+        self,
+        *,
+        db: Session,
+        person: Person,
+        direction: str,
+        attendance: Attendance,
+        ppe_details: Optional[Dict[str, Any]],
+    ) -> None:
+        details = normalize_ppe_details(ppe_details)
+        required_items = details.get("required_items") or []
+        if direction != "ENTRY" or not required_items or details.get("status") != "compliant":
+            return
+
+        create_event_record(
+            db,
+            category="PPE",
+            event_type="PPE_ENTRY_OK",
+            severity="INFO",
+            message=f"{person.name} cleared the PPE check.",
+            data={
+                "message": f"{person.name} cleared the PPE check.",
+                "person_id": person.id,
+                "person_name": person.name,
+                "attendance_id": attendance.id,
+                "direction": direction,
+                "timestamp": attendance.timestamp.isoformat() if attendance.timestamp else None,
+                "required_items": details.get("required_items") or [],
+                "detected_items": details.get("detected_items") or [],
+                "latched_items": details.get("latched_items") or [],
+                "ppe_details": details,
+            },
+            snapshot_path=attendance.snapshot_path,
+            is_resolved=True,
+        )
 
     def _encode_snapshot(self, frame) -> Optional[Tuple[bytes, str]]:
         ok, encoded = cv2.imencode(
@@ -439,6 +677,35 @@ class GateAttendanceRecognizer:
         if not ok:
             return None
         return encoded.tobytes(), "image/jpeg"
+
+    @staticmethod
+    def _compute_yaw_offset(face: Dict[str, Any]) -> Optional[float]:
+        """Estimate how much the face is turned away from the camera.
+
+        Uses InsightFace's 106-point landmark mean-x relative to the face
+        bbox centre. When the subject looks straight at the camera the
+        landmark centroid sits near the bbox centre; when they turn their
+        head, the centroid skews toward the visible side. Value is
+        normalised to the bbox width so it's resolution-independent.
+
+        Returns a float in [0, ~0.5], or None if landmarks are unavailable.
+        0.0 = perfectly frontal. ~0.2+ = noticeable yaw.
+        """
+        landmarks = face.get("landmark_2d_106")
+        bbox = face.get("bbox")
+        if landmarks is None or bbox is None:
+            return None
+        try:
+            xs = [float(pt[0]) for pt in landmarks]
+            if not xs:
+                return None
+            mean_x = sum(xs) / len(xs)
+            x1, _y1, x2, _y2 = bbox
+            width = max(float(x2) - float(x1), 1.0)
+            centre_x = (float(x1) + float(x2)) / 2.0
+            return abs(mean_x - centre_x) / width
+        except Exception:
+            return None
 
     def _clear_active_review(self) -> None:
         self.active_review_person_id = None
@@ -682,36 +949,53 @@ class GateAttendanceRecognizer:
         person: Person,
         now: datetime,
     ) -> Tuple[Optional[str], str]:
+        """Decide whether the current face match should log ENTRY, EXIT, or
+        nothing at all.
+
+        The `min_direction_gap_seconds` debounce is only applied when the
+        prospective action would be the SAME direction as the person's most
+        recent record. Cross-direction transitions (e.g. they just checked in
+        and now are checking out) must NOT be blocked by the debounce —
+        otherwise a demo walk-in-walk-out cycle eats the checkout silently
+        and leaves the gate "just keeps scanning" with no log written.
+        """
         shift_id, shift_started_at = self._get_current_shift_window(now)
         last_record = self._get_last_attendance_in_shift(person.id, shift_started_at)
-
-        if last_record is not None:
-            last_timestamp = last_record.timestamp or now
-            if (now - last_timestamp).total_seconds() < self.min_direction_gap_seconds:
-                return None, (
-                    f"{person.name} was already logged recently during the {shift_id} shift."
-                )
 
         if self.gate_direction_mode == "EXIT":
             latest_record = self._get_latest_attendance(person.id)
             if latest_record is None:
                 return None, f"{person.name} is not currently on site."
 
-            latest_timestamp = latest_record.timestamp or now
-            if (now - latest_timestamp).total_seconds() < self.min_direction_gap_seconds:
-                return None, f"{person.name} was already logged recently."
-
             if latest_record.direction == "EXIT" or not latest_record.access_granted:
+                # Only debounce a *second* EXIT within the gap window; if the
+                # person genuinely isn't on site we always say so regardless
+                # of time gap.
+                latest_timestamp = latest_record.timestamp or now
+                if (now - latest_timestamp).total_seconds() < self.min_direction_gap_seconds:
+                    return None, f"{person.name} was just checked out."
                 return None, f"{person.name} is already checked out."
 
+            # Last record is an ENTRY — legitimate checkout. No debounce
+            # across direction transitions; the check above already guarantees
+            # we're not repeating an EXIT.
             return "EXIT", f"{person.name} checked out from the site."
 
+        # ENTRY path
         if last_record is None:
             return "ENTRY", f"{person.name} checked in during the {shift_id} shift."
 
         if last_record.direction == "ENTRY":
-            return None, f"{person.name} is already checked in for the {shift_id} shift."
+            # Same-direction debounce: only block a duplicate ENTRY if it
+            # lands within the gap window.
+            last_timestamp = last_record.timestamp or now
+            if (now - last_timestamp).total_seconds() < self.min_direction_gap_seconds:
+                return None, (
+                    f"{person.name} is already checked in."
+                )
+            return None, f"{person.name} is already checked in."
 
+        # Last was EXIT within this shift — allow re-entry.
         return "ENTRY", f"{person.name} checked in during the {shift_id} shift."
 
     def _draw_match_box(self, frame, bbox, label, color):
@@ -785,21 +1069,170 @@ class GateAttendanceRecognizer:
             float(bbox[3] * scale_y),
         ]
 
-    def draw_live_overlay(self, frame):
-        if (
-            self.last_overlay_bbox is not None
-            and time.time() - self.last_overlay_seen_at <= self.last_overlay_hold_seconds
-        ):
-            self._draw_match_box(
-                frame,
-                self.last_overlay_bbox,
-                self.last_overlay_label,
-                self.last_overlay_color,
+    def _ensure_live_detector(self):
+        """Return a MediaPipe face detector used for live bbox tracking.
+
+        Much cheaper than InsightFace (~3-5ms per frame) so we can run it on
+        every preview frame to keep the overlay glued to the face. Identity +
+        similarity percentage still come from the ArcFace run in the gate
+        processing thread; this detector only supplies live coordinates.
+        """
+        if self._live_detector is not None or self._live_detector_failed:
+            return self._live_detector
+        try:
+            import mediapipe as mp
+            # Lower confidence → fewer missed detections on motion / off-angle
+            # frames, so the square doesn't blink. False positives aren't a
+            # concern: we only use the bbox, identity still comes from
+            # ArcFace.
+            self._live_detector = mp.solutions.face_detection.FaceDetection(
+                model_selection=0,
+                min_detection_confidence=0.25,
             )
+        except Exception:
+            logger.exception("Gate live face detector init failed.")
+            self._live_detector_failed = True
+        return self._live_detector
+
+    def _detect_live_bbox(self, frame) -> Optional[List[float]]:
+        """Return (bbox, mediapipe_confidence) for the largest detected face.
+
+        Stored together in self._last_live_bbox_confidence so the overlay can
+        show a live "Detected XX%" tag before ArcFace completes its first
+        recognition pass.
+        """
+        detector = self._ensure_live_detector()
+        if detector is None or frame is None:
+            return None
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = detector.process(rgb)
+        except Exception:
+            logger.exception("Gate live face detection failed.")
+            return None
+        detections = getattr(results, "detections", None) or []
+        if not detections:
+            return None
+        h, w = frame.shape[:2]
+        best = max(
+            detections,
+            key=lambda d: d.location_data.relative_bounding_box.width
+            * d.location_data.relative_bounding_box.height,
+        )
+        box = best.location_data.relative_bounding_box
+        x1 = max(0.0, box.xmin * w)
+        y1 = max(0.0, box.ymin * h)
+        x2 = min(float(w), (box.xmin + box.width) * w)
+        y2 = min(float(h), (box.ymin + box.height) * h)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        # MediaPipe exposes detection confidence via `score` (a list with one
+        # float). Default to 0 if absent so the overlay still shows a bbox.
+        score_list = getattr(best, "score", None) or [0.0]
+        try:
+            self._last_live_bbox_confidence = float(score_list[0])
+        except Exception:
+            self._last_live_bbox_confidence = 0.0
+        return [float(x1), float(y1), float(x2), float(y2)]
+
+    def _smoothed_live_bbox(self, frame) -> Optional[List[float]]:
+        """Return the live bbox with a tiny temporal smoothing window.
+
+        MediaPipe occasionally drops a detection on a single frame (motion
+        blur, eyes closed, sharp turn). Without smoothing this shows up as
+        a 50-150ms gap where the square vanishes — the "flicker" the user
+        sees. We keep the most recent bbox for up to _live_bbox_persist_s
+        (≈150ms) to cover single-frame misses, then fall back to nothing.
+        This is not a "hold" — if the face is gone for longer the square
+        disappears. Position still tracks live on every frame that does
+        detect.
+        """
+        now_ts = time.time()
+        detected = self._detect_live_bbox(frame)
+        if detected is not None:
+            # Slight exponential smoothing on position so small MediaPipe
+            # jitter between frames doesn't look jerky.
+            if (
+                self._last_live_bbox is not None
+                and now_ts - self._last_live_bbox_at <= self._live_bbox_persist_s
+            ):
+                alpha = 0.55  # heavier weight on the new reading
+                detected = [
+                    alpha * detected[i] + (1 - alpha) * self._last_live_bbox[i]
+                    for i in range(4)
+                ]
+            self._last_live_bbox = detected
+            self._last_live_bbox_at = now_ts
+            return detected
+        # Carry the last bbox for a very short window to cover single-frame
+        # MediaPipe misses without freezing.
+        if (
+            self._last_live_bbox is not None
+            and now_ts - self._last_live_bbox_at <= self._live_bbox_persist_s
+        ):
+            return self._last_live_bbox
+        self._last_live_bbox = None
+        return None
+
+    def draw_live_overlay(self, frame):
+        """Render the gate overlay using a live bbox on every preview frame.
+
+        The bbox is detected fresh each call (with tiny smoothing to hide
+        single-frame MediaPipe misses); the label + similarity percentage
+        reuse the most recent ArcFace recognition result so the percentage
+        updates as fast as the gate processing thread produces it. When the
+        face is truly gone (>150ms without any detection), nothing is drawn.
+        """
+        live_bbox = self._smoothed_live_bbox(frame)
+        if live_bbox is None:
+            return frame
+
+        now_ts = time.time()
+        label_age = now_ts - self.last_overlay_seen_at
+
+        # Treat a label as a "named match" if it ends in "NN%" — that's the
+        # format ArcFace produces ("Christo 92%", "Unknown face", etc). Named
+        # matches get an extended hold so an ArcFace skip doesn't flicker the
+        # label back to the MediaPipe "Detected XX%" tag. Generic overlay
+        # labels (no trailing percentage) still clear at overlay_hold_seconds.
+        def _looks_like_named_match(s: str) -> bool:
+            if not s:
+                return False
+            stripped = s.rstrip()
+            if not stripped.endswith("%"):
+                return False
+            # Grab the digits before the trailing "%" to confirm.
+            tail = stripped[:-1].rstrip()
+            last_token = tail.split()[-1] if tail.split() else ""
+            return last_token.isdigit()
+
+        is_named = _looks_like_named_match(self.last_overlay_label)
+        effective_hold = (
+            max(self.last_overlay_hold_seconds, self.named_match_hold_seconds)
+            if is_named
+            else self.last_overlay_hold_seconds
+        )
+
+        if self.last_overlay_label and label_age <= effective_hold:
+            # ArcFace has produced a recent match label (e.g. "John Doe 92%").
+            label = self.last_overlay_label
+            color = self.last_overlay_color
+        else:
+            # No fresh ArcFace result yet — show MediaPipe detection confidence
+            # so the operator sees a live percentage next to the face box
+            # instead of a generic "Analyzing…" with no feedback.
+            confidence_pct = int(round(self._last_live_bbox_confidence * 100))
+            confidence_pct = max(0, min(100, confidence_pct))
+            if confidence_pct > 0:
+                label = f"Detected {confidence_pct}%"
+            else:
+                label = "Detecting…"
+            color = (148, 163, 184)
+
+        self._draw_match_box(frame, live_bbox, label, color)
         return frame
 
-    def process_frame(self, frame):
-        """Recognize a worker from the current frame and log attendance."""
+    def process_frame(self, frame, direction_hint: Optional[str] = None):
         events: List[GateRecognitionEvent] = []
         now_ts = time.time()
 
@@ -825,13 +1258,21 @@ class GateAttendanceRecognizer:
             return frame, events
 
         analysis_frame, scale_x, scale_y = self._prepare_analysis_frame(frame)
-        detected_faces = [
-            {
-                **face,
-                "bbox": self._scale_bbox(face["bbox"], scale_x, scale_y),
-            }
-            for face in face_recognizer.analyze_faces(analysis_frame)
-        ]
+        detected_faces = []
+        for face in face_recognizer.analyze_faces(analysis_frame):
+            # Compute yaw in ANALYSIS-frame coords where the bbox and
+            # landmark_2d_106 landmarks still share a coordinate space.
+            # Mixing analysis-scale landmarks with the upscaled bbox gave a
+            # bogus centroid-vs-centre delta and made the gate permanently
+            # report "face is turned".
+            yaw_offset = self._compute_yaw_offset(face)
+            detected_faces.append(
+                {
+                    **face,
+                    "bbox": self._scale_bbox(face["bbox"], scale_x, scale_y),
+                    "_precomputed_yaw": yaw_offset,
+                }
+            )
         if not detected_faces:
             if (
                 self.active_match_person_id is not None
@@ -848,7 +1289,6 @@ class GateAttendanceRecognizer:
                 and now_ts - self.resolved_review_last_seen_at >= self.rearm_after_absence_seconds
             ):
                 self._clear_resolved_review()
-            self._clear_ppe_history()
             if self._has_recent_overlay(now_ts):
                 self.gate_state = {
                     **self.gate_state,
@@ -857,6 +1297,9 @@ class GateAttendanceRecognizer:
                     "message": "Holding the last face box while the camera reacquires the worker.",
                 }
                 return frame, events
+            held_ppe_details = self._get_live_ppe_details(now_ts)
+            if not self._has_live_ppe_session(now_ts):
+                self._clear_ppe_history()
             self._clear_overlay()
             self.last_candidate_person_id = None
             self.last_candidate_streak = 0
@@ -866,13 +1309,80 @@ class GateAttendanceRecognizer:
                 message="No face detected.",
                 last_seen_at=now_ts,
                 faces_detected=0,
+                ppe_details=held_ppe_details,
             )
             return frame, events
 
-        best_face = max(
-            detected_faces,
-            key=lambda face: (face["bbox"][2] - face["bbox"][0]) * (face["bbox"][3] - face["bbox"][1]),
-        )
+        # Score each detected face and filter out low-quality detections.
+        # Yaw (face-turn) is computed from landmark symmetry so the gate
+        # can ask the worker to face the camera directly instead of burning
+        # a bad match on a side-profile embedding.
+        scored_faces = []
+        for face in detected_faces:
+            blur = calculate_blur_score(frame, face["bbox"])
+            area_ratio = calculate_face_area_ratio(frame, face["bbox"])
+            det = float(face.get("det_score", 0.0))
+            quality = calculate_quality_score(det, area_ratio, blur)
+            yaw_offset = face.get("_precomputed_yaw")
+            scored_faces.append({
+                **face,
+                "_blur": blur,
+                "_area_ratio": area_ratio,
+                "_det": det,
+                "_quality": quality,
+                "_yaw": yaw_offset,
+            })
+
+        # Categorise failures so the live overlay can give a targeted hint
+        # ("move closer" vs "face the camera" vs "hold still").
+        def _face_issue(f):
+            if f["_det"] < self.min_det_score:
+                return "unclear"
+            if f["_area_ratio"] < self.min_face_area_ratio:
+                return "too_far"
+            if f["_blur"] < self.min_blur_score:
+                return "blurry"
+            if f["_yaw"] is not None and f["_yaw"] > self.max_yaw_offset:
+                return "turned"
+            return None
+
+        passing_faces = [f for f in scored_faces if _face_issue(f) is None]
+
+        if not passing_faces:
+            # Pick the most prominent failing face to describe what's wrong.
+            worst = max(scored_faces, key=lambda f: f["_area_ratio"])
+            issue = _face_issue(worst) or "unclear"
+            guidance = {
+                "too_far": "Face is too far — move closer to the gate camera.",
+                "blurry": "Motion blur detected — hold still and face the camera.",
+                "turned": "Face is turned — look directly at the gate camera.",
+                "unclear": "Face too unclear — move closer or face the camera directly.",
+            }[issue]
+
+            # Hold the last overlay briefly so the face box doesn't flicker on
+            # every slightly-blurry frame — only clear if quality stays bad.
+            if self._has_recent_overlay(now_ts):
+                self.gate_state = {
+                    **self.gate_state,
+                    "last_seen_at": now_ts,
+                    "faces_detected": len(detected_faces),
+                    "message": guidance,
+                }
+                return frame, events
+            self._clear_overlay()
+            held_ppe_details = self._get_live_ppe_details(now_ts)
+            if not self._has_live_ppe_session(now_ts):
+                self._clear_ppe_history()
+            self.gate_state = self._build_gate_state(
+                match_status="low_quality_face",
+                message=guidance,
+                last_seen_at=now_ts,
+                faces_detected=len(detected_faces),
+                ppe_details=held_ppe_details,
+            )
+            return frame, events
+
+        best_face = max(passing_faces, key=lambda f: f["_quality"])
         faces_detected = len(detected_faces)
         now_dt = datetime.now()
         policy = self._get_gate_policy()
@@ -954,7 +1464,6 @@ class GateAttendanceRecognizer:
         match_percent = self._get_match_percent(score)
 
         if person is None or score < self.candidate_threshold:
-            self._clear_ppe_history()
             self.unknown_face_streak += 1
             if self._has_recent_overlay(now_ts) and self._has_recent_match_state(now_ts):
                 self.gate_state = {
@@ -988,10 +1497,17 @@ class GateAttendanceRecognizer:
                 hold_seconds=self.unknown_overlay_hold_seconds,
             )
             self._draw_match_box(frame, best_face["bbox"], "Unknown face", (0, 165, 255))
+
+            # Unknown-face attempts are no longer persisted as pending reviews — the
+            # gate still blocks them in real time, but we don't bloat the DB or the
+            # "on-site" count with phantom Unknown sessions that have to be manually
+            # approved. The visual "Unknown face" overlay + 4xx gate response is
+            # enough of an audit trail for this demo.
+
             return frame, events
 
         if match_percent < 79:
-            self._clear_ppe_history()
+            held_ppe_details = self._get_live_ppe_details(now_ts, person_id=person.id)
             self.unknown_face_streak = 0
             self.last_match_state_seen_at = now_ts
             self.last_candidate_person_id = person.id
@@ -1012,6 +1528,7 @@ class GateAttendanceRecognizer:
                 overlay_label=label,
                 overlay_tone="warning",
                 candidate_scope=candidate_scope,
+                ppe_details=held_ppe_details,
             )
             self._set_overlay(
                 best_face["bbox"],
@@ -1039,27 +1556,56 @@ class GateAttendanceRecognizer:
         review_reasons: List[str] = []
         ppe_blocked = False
 
+        # --- LIVE PPE SCANNING ---
+        # Run PPE detection on every frame the moment the face match is
+        # plausible (>=79%, i.e. review band or higher), not only when the
+        # match is fully confirmed. The operator sees helmet/vest status
+        # updating live while the match is still being verified, and the
+        # eventual check-in decision has fresh PPE data instead of a single
+        # snapshot from the confirmation frame.
+        required_items = get_required_ppe_items(policy)
+        if (
+            required_items
+            and ppe_detector.available
+            and self.gate_direction_mode == "ENTRY"
+            and (policy.enforce_stage or "ENTRY_ONLY") == "ENTRY_ONLY"
+        ):
+            ppe_details = self._evaluate_ppe_for_candidate(
+                person_id=person.id,
+                direction="ENTRY",
+                frame=frame,
+                face_bbox=best_face["bbox"],
+                policy=policy,
+                now_ts=now_ts,
+            )
+
         if confirmed:
             direction, details = self._plan_attendance_action(person, now_dt)
             if direction is not None:
-                ppe_details = self._evaluate_ppe_for_candidate(
-                    person_id=person.id,
-                    direction=direction,
-                    frame=frame,
-                    face_bbox=best_face["bbox"],
-                    policy=policy,
-                )
+                # Re-run only if the live scan above was skipped (e.g. EXIT
+                # direction, or enforce_stage changed). Otherwise reuse the
+                # already-scanned `ppe_details` so we don't pay double
+                # inference cost.
+                if not ppe_details.get("detected_items") and direction == "ENTRY":
+                    ppe_details = self._evaluate_ppe_for_candidate(
+                        person_id=person.id,
+                        direction=direction,
+                        frame=frame,
+                        face_bbox=best_face["bbox"],
+                        policy=policy,
+                        now_ts=now_ts,
+                    )
                 review_reasons = self._build_review_reasons(
                     review_band_match=review_band_match,
                     ppe_details=ppe_details,
+                    person=person,
+                    direction=direction,
                 )
                 ppe_blocked = self._should_block_for_ppe(
                     direction=direction,
                     policy=policy,
                     ppe_details=ppe_details,
                 )
-            else:
-                self._clear_ppe_history()
 
             if self.resolved_review_person_id == person.id and (
                 review_band_match or ppe_blocked
@@ -1155,7 +1701,18 @@ class GateAttendanceRecognizer:
         self._draw_match_box(frame, best_face["bbox"], label, color)
 
         if confirmed:
-            if not needs_review and self.active_match_person_id == person.id:
+            # Debounce: if this person is already our active match AND
+            # _plan_attendance_action decided there's nothing new to log
+            # (direction is None), short-circuit so we don't spam events.
+            # BUT if direction is set (e.g. user just switched ENTRY→EXIT
+            # and this is a legitimate checkout), fall through and let the
+            # log path run — otherwise the checkout silently disappears
+            # while the overlay just keeps scanning.
+            if (
+                not needs_review
+                and self.active_match_person_id == person.id
+                and direction is None
+            ):
                 self.active_match_last_seen_at = now_ts
                 return frame, events
             if needs_review and self.active_review_person_id == person.id:
@@ -1243,6 +1800,7 @@ class GateAttendanceRecognizer:
                 now_dt,
                 ppe_compliant=ppe_compliant,
                 ppe_details=ppe_details,
+                frame=frame,
             )
             events.append(
                 GateRecognitionEvent(

@@ -5,8 +5,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { useAuth } from "../contexts/AuthContext";
 import { useAppLanguage } from "../contexts/AppLanguageContext";
 import {
+  clearAttendanceLogs,
   getAttendance,
   getAttendanceReviews,
   getPersons,
@@ -16,6 +18,10 @@ import {
   readPlatformLogs,
 } from "../utils/platformLogs";
 import { buildAttendanceSessionState } from "../utils/attendanceSessions";
+import {
+  canAccessAttendance,
+  canAccessDrivers,
+} from "../utils/accessControl";
 import {
   DriversIcon,
   AttendanceIcon,
@@ -137,29 +143,19 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
-const logCategories = [
-  {
-    icon: DriversIcon,
-    color: "var(--color-info)",
-    type: "Fleet Logs",
-    description: "Fatigue, route activity, and driver monitoring sessions.",
-  },
-  {
-    icon: AttendanceIcon,
-    color: "var(--color-success)",
-    type: "Attendance Logs",
-    description:
-      "Completed worker sessions with check-in, check-out, face match, and operator notes.",
-  },
-];
-
 function Logs() {
   const { t } = useAppLanguage();
+  const { user } = useAuth();
   const [store, setStore] = useState(() => readPlatformLogs());
   const [filters, setFilters] = useState(() => readLogFilters());
   const [persons, setPersons] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [gateReviews, setGateReviews] = useState([]);
+  const [attendanceBusy, setAttendanceBusy] = useState(false);
+  const [attendanceMessage, setAttendanceMessage] = useState("");
+  const [attendanceError, setAttendanceError] = useState("");
+  const canViewFleetLogs = canAccessDrivers(user?.role);
+  const canViewAttendanceLogs = canAccessAttendance(user?.role);
 
   const fleetSessions = store.fleet.sessions || [];
 
@@ -169,9 +165,11 @@ function Logs() {
     const loadLogs = async () => {
       try {
         const [personList, attendanceList, reviewList] = await Promise.all([
-          getPersons(),
-          getAttendance({ limit: 500 }),
-          getAttendanceReviews("all", { limit: 500 }),
+          canViewAttendanceLogs ? getPersons() : Promise.resolve([]),
+          canViewAttendanceLogs ? getAttendance({ limit: 500 }) : Promise.resolve([]),
+          canViewAttendanceLogs
+            ? getAttendanceReviews("all", { limit: 500 })
+            : Promise.resolve([]),
         ]);
 
         if (cancelled) {
@@ -195,7 +193,7 @@ function Logs() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [canViewAttendanceLogs]);
 
   const completedSessions = useMemo(
     () =>
@@ -211,17 +209,63 @@ function Logs() {
       }),
     [persons, attendanceRecords, gateReviews, filters.attendanceClearedAt],
   );
-  const counts = [
-    `${fleetSessions.length} session${fleetSessions.length === 1 ? "" : "s"} tracked`,
-    `${completedSessions.length} completed session${completedSessions.length === 1 ? "" : "s"}`,
-  ];
+  const visibleLogCategories = [
+    canViewFleetLogs
+      ? {
+          icon: DriversIcon,
+          color: "var(--color-info)",
+          type: "Fleet Logs",
+          description: "Fatigue, route activity, and driver monitoring sessions.",
+          countLabel: `${fleetSessions.length} session${fleetSessions.length === 1 ? "" : "s"} tracked`,
+        }
+      : null,
+    canViewAttendanceLogs
+      ? {
+          icon: AttendanceIcon,
+          color: "var(--color-success)",
+          type: "Attendance Logs",
+          description:
+            "Completed worker sessions with check-in, check-out, face match, and operator notes.",
+          countLabel: `${completedSessions.length} completed session${completedSessions.length === 1 ? "" : "s"}`,
+        }
+      : null,
+  ].filter(Boolean);
 
   const handleClearModule = (moduleName) => {
     clearPlatformLogModule(moduleName);
     setStore(readPlatformLogs());
   };
 
-  const handleClearAttendanceLogs = () => {
+  const handleClearAttendanceLogs = async () => {
+    const confirmed = window.confirm(
+      "Clear all attendance logs, review queue items, and PPE log history?",
+    );
+    if (!confirmed || attendanceBusy) {
+      return;
+    }
+
+    setAttendanceBusy(true);
+    setAttendanceError("");
+    setAttendanceMessage("");
+    try {
+      const response = await clearAttendanceLogs();
+      setAttendanceRecords([]);
+      setGateReviews([]);
+      const summary = [
+        response.attendance_deleted || 0,
+        response.reviews_deleted || 0,
+        response.ppe_events_deleted || 0,
+      ].reduce((total, count) => total + count, 0);
+      setAttendanceMessage(
+        `Attendance history cleared. ${summary} attendance, review, and PPE records removed.`,
+      );
+    } catch (error) {
+      setAttendanceError(error.message || "Attendance logs could not be cleared.");
+      return;
+    } finally {
+      setAttendanceBusy(false);
+    }
+
     const nextFilters = {
       ...filters,
       attendanceClearedAt: Date.now(),
@@ -247,9 +291,9 @@ function Logs() {
         variants={containerVariants}
         initial="hidden"
         animate="visible"
-        className="mb-8 grid gap-4 lg:grid-cols-2"
+        className={`mb-8 grid gap-4 ${visibleLogCategories.length > 1 ? "lg:grid-cols-2" : ""}`}
       >
-        {logCategories.map((cat, i) => (
+        {visibleLogCategories.map((cat) => (
           <motion.article
             key={cat.type}
             variants={itemVariants}
@@ -257,7 +301,7 @@ function Logs() {
           >
             <div className="flex items-start justify-between">
               <div>
-                <p className="stat-card__label">{counts[i]}</p>
+                <p className="stat-card__label">{cat.countLabel}</p>
                 <h2 className="mt-3 font-display text-2xl font-semibold text-primary">
                   {cat.type}
                 </h2>
@@ -276,7 +320,8 @@ function Logs() {
         ))}
       </motion.section>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className={`grid gap-6 ${canViewFleetLogs && canViewAttendanceLogs ? "xl:grid-cols-2" : ""}`}>
+        {canViewFleetLogs ? (
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -372,13 +417,29 @@ function Logs() {
             </div>
           )}
         </motion.section>
+        ) : null}
 
+        {canViewAttendanceLogs ? (
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
+          transition={{ delay: canViewFleetLogs ? 0.3 : 0.2 }}
           className="space-y-4"
         >
+          {attendanceMessage ? (
+            <div className="rounded-xl border border-[var(--color-success)] bg-[var(--color-success-muted)] px-4 py-3">
+              <p className="text-sm font-semibold" style={{ color: "var(--color-success)" }}>
+                {attendanceMessage}
+              </p>
+            </div>
+          ) : null}
+          {attendanceError ? (
+            <div className="rounded-xl border border-[var(--color-error)] bg-[var(--color-error-muted)] px-4 py-3">
+              <p className="text-sm font-semibold" style={{ color: "var(--color-error)" }}>
+                {attendanceError}
+              </p>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between">
             <h2 className="font-display text-xl font-semibold text-primary">
               Attendance Sessions
@@ -388,9 +449,10 @@ function Logs() {
               <button
                 type="button"
                 onClick={handleClearAttendanceLogs}
+                disabled={attendanceBusy}
                 className="btn btn-secondary h-10 px-4"
               >
-                Clear
+                {attendanceBusy ? "Clearing..." : "Clear"}
               </button>
             </div>
           </div>
@@ -481,6 +543,7 @@ function Logs() {
             </div>
           )}
         </motion.section>
+        ) : null}
 
       </div>
     </div>

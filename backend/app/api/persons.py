@@ -3,8 +3,10 @@ Person enrollment API.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
@@ -167,7 +169,9 @@ def create_person(payload: PersonUpsertRequest, db: Session = Depends(get_db)):
     else:
         person.embedding = json.dumps(parse_embedding_payload(None))
 
-    write_person_profile(person.id, {"shift_id": payload.shift_id})
+    valid_shift = payload.shift_id if payload.shift_id in {"day", "swing", "night"} else None
+    person.shift_id = valid_shift
+    write_person_profile(person.id, {"shift_id": valid_shift})
     db.commit()
     db.refresh(person)
     _invalidate_gate_cache()
@@ -213,7 +217,7 @@ async def create_person_from_media(
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Enrollment processing failed: {exc}",
+                detail="Enrollment processing failed.",
             ) from exc
 
         _raise_for_enrollment_status(embedding_payload)
@@ -228,7 +232,9 @@ async def create_person_from_media(
     else:
         person.embedding = json.dumps(parse_embedding_payload(None))
 
-    write_person_profile(person.id, {"shift_id": shift_id})
+    valid_shift = shift_id if shift_id in {"day", "swing", "night"} else None
+    person.shift_id = valid_shift
+    write_person_profile(person.id, {"shift_id": valid_shift})
     db.commit()
     db.refresh(person)
     _invalidate_gate_cache()
@@ -292,7 +298,7 @@ async def update_person_from_media(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Enrollment processing failed: {exc}",
+            detail="Enrollment processing failed.",
         ) from exc
 
     _raise_for_enrollment_status(embedding_payload)
@@ -308,7 +314,9 @@ async def update_person_from_media(
             thumbnail_sample.mime_type,
         )
 
-    write_person_profile(person.id, {"shift_id": shift_id})
+    valid_shift = shift_id if shift_id in {"day", "swing", "night"} else None
+    person.shift_id = valid_shift
+    write_person_profile(person.id, {"shift_id": valid_shift})
     db.commit()
     db.refresh(person)
     _invalidate_gate_cache()
@@ -336,15 +344,173 @@ def update_person(
     person.name = payload.name.strip()
     person.employee_id = employee_id
     person.is_active = payload.is_active
+    valid_shift = payload.shift_id if payload.shift_id in {"day", "swing", "night"} else None
+    person.shift_id = valid_shift
 
     if payload.image_data_url:
         _apply_enrollment_image(person, payload.image_data_url)
 
-    write_person_profile(person.id, {"shift_id": payload.shift_id})
+    write_person_profile(person.id, {"shift_id": valid_shift})
     db.commit()
     db.refresh(person)
     _invalidate_gate_cache()
     return serialize_person(person)
+
+
+VALID_SHIFTS = {"day", "swing", "night"}
+
+
+def _normalize_shift(value: Optional[str]) -> Optional[str]:
+    """Map common shift spellings onto the canonical id set."""
+    if not value:
+        return None
+    token = value.strip().lower()
+    if not token:
+        return None
+    if token in VALID_SHIFTS:
+        return token
+    # Forgiving aliases so spreadsheets don't require exact casing.
+    if "night" in token or "late" in token:
+        return "night"
+    if "swing" in token or "mid" in token or "evening" in token:
+        return "swing"
+    if "day" in token or "morning" in token or "early" in token:
+        return "day"
+    return None
+
+
+def _truthy(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    token = str(value).strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "y", "active", "on", "enabled"}:
+        return True
+    if token in {"0", "false", "no", "n", "inactive", "off", "disabled"}:
+        return False
+    return default
+
+
+class BulkImportSummary(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: List[Dict[str, Any]]
+    total_rows: int
+
+
+@router.post("/bulk-import", response_model=BulkImportSummary)
+async def bulk_import_persons(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upsert a worker roster from a CSV file.
+
+    Expected columns (case-insensitive, any subset):
+        name (required)
+        employee_id
+        shift_id       -- day|swing|night (or "morning"/"late"/"evening"/"mid")
+        is_active      -- truthy flag, defaults to True
+
+    Rows matched to existing workers by employee_id update in place;
+    otherwise a new metadata-only record is created (no face embedding —
+    enrollment media still has to be uploaded separately).
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV file is empty.",
+        )
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1", errors="replace")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV is missing a header row.",
+        )
+
+    # Normalise headers so callers don't have to match our exact casing.
+    header_map = {
+        (h or "").strip().lower().replace(" ", "_"): h for h in reader.fieldnames
+    }
+    if "name" not in header_map:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV must include a 'name' column.",
+        )
+
+    def pick(row: Dict[str, Any], key: str) -> Optional[str]:
+        source = header_map.get(key)
+        if not source:
+            return None
+        value = row.get(source)
+        return value.strip() if isinstance(value, str) else value
+
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: List[Dict[str, Any]] = []
+    total_rows = 0
+
+    for index, row in enumerate(reader, start=2):  # line 1 is header
+        total_rows += 1
+        name = pick(row, "name")
+        if not name:
+            skipped += 1
+            errors.append({"line": index, "reason": "Missing name."})
+            continue
+
+        employee_id = pick(row, "employee_id") or None
+        shift_id = _normalize_shift(pick(row, "shift_id"))
+        is_active = _truthy(pick(row, "is_active"), default=True)
+
+        existing: Optional[Person] = None
+        if employee_id:
+            existing = (
+                db.query(Person).filter(Person.employee_id == employee_id).first()
+            )
+
+        try:
+            if existing:
+                existing.name = name
+                existing.shift_id = shift_id
+                existing.is_active = is_active
+                write_person_profile(existing.id, {"shift_id": shift_id})
+                updated += 1
+            else:
+                person = Person(
+                    name=name,
+                    employee_id=employee_id,
+                    shift_id=shift_id,
+                    is_active=is_active,
+                )
+                person.embedding = json.dumps(parse_embedding_payload(None))
+                db.add(person)
+                db.flush()
+                write_person_profile(person.id, {"shift_id": shift_id})
+                created += 1
+        except Exception as exc:  # pragma: no cover - defensive
+            db.rollback()
+            skipped += 1
+            errors.append({"line": index, "reason": str(exc)[:200]})
+            continue
+
+    db.commit()
+    _invalidate_gate_cache()
+    return BulkImportSummary(
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        total_rows=total_rows,
+    )
 
 
 @router.delete("/{person_id}", response_model=PersonResponse)

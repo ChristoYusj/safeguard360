@@ -14,12 +14,10 @@ export function useWebSocket(path) {
 
     ws.onopen = () => {
       setIsConnected(true);
-      console.log(`WebSocket connected: ${path}`);
     };
 
     ws.onclose = () => {
       setIsConnected(false);
-      console.log(`WebSocket disconnected: ${path}`);
       // Reconnect after 2 seconds
       reconnectTimeoutRef.current = setTimeout(connect, 2000);
     };

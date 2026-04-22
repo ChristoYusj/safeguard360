@@ -23,9 +23,10 @@ class Person(Base):
     employee_id = Column(String(50), nullable=True)
     embedding = Column(Text, nullable=True)  # JSON serialized
     thumbnail_path = Column(String(255), nullable=True)
+    shift_id = Column(String(20), nullable=True)  # day | swing | night
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    
+
     attendance_records = relationship("Attendance", back_populates="person")
 
 
@@ -58,8 +59,11 @@ class User(Base):
     full_name = Column(String(150), nullable=False)
     email = Column(String(255), nullable=False, unique=True, index=True)
     role_department = Column(String(150), nullable=True)
+    role = Column(String(32), nullable=True)
     password_hash = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default="pending")
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    approval_token_version = Column(Integer, nullable=False, default=0)
+    password_reset_token_version = Column(Integer, nullable=False, default=0)
     two_factor_secret = Column(Text, nullable=True)
     two_factor_enabled = Column(Boolean, default=False)
     backup_codes = Column(Text, nullable=True)
@@ -69,6 +73,18 @@ class User(Base):
     refresh_token = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AuditLog(Base):
+    """Administrative and security audit log."""
+    __tablename__ = "audit_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    operator_email = Column(String(255), nullable=False)
+    event_type = Column(String(64), nullable=False)
+    ip_address = Column(String(64), nullable=True)
+    detail = Column(Text, nullable=True)
 
 
 class GateReview(Base):

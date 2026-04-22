@@ -88,7 +88,7 @@ class FaceRecognizer:
 
             face_app = FaceAnalysis(
                 name=self.settings.FACE_MODEL,
-                root=self.settings.MODELS_DIR,
+                root=self.settings.resolved_models_dir,
                 providers=["CPUExecutionProvider"],
             )
             face_app.prepare(ctx_id=-1, det_size=(416, 416))

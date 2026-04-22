@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.connection import get_db
-from app.db.models import Attendance, GateReview, Person
+from app.db.models import Alert, Attendance, Event, GateReview, Person
 from app.services.persons import (
     parse_image_data_url,
     read_image_data_url,
@@ -55,6 +55,7 @@ class AttendanceResponse(BaseModel):
     ppe_compliant: bool
     access_granted: bool
     snapshot_path: Optional[str] = None
+    snapshot_data_url: Optional[str] = None
     confidence: Optional[float] = None
     ppe_details: Dict[str, Any] = Field(default_factory=dict)
     camera_source_type: Optional[str] = None
@@ -112,6 +113,13 @@ class PpePolicyUpdateRequest(BaseModel):
     deny_non_compliant_entry: Optional[bool] = None
 
 
+class AttendanceLogClearResponse(BaseModel):
+    attendance_deleted: int
+    reviews_deleted: int
+    ppe_events_deleted: int
+    alerts_deleted: int
+
+
 def _serialize_attendance(record: Attendance) -> AttendanceResponse:
     return AttendanceResponse(
         id=record.id,
@@ -123,6 +131,7 @@ def _serialize_attendance(record: Attendance) -> AttendanceResponse:
         ppe_compliant=record.ppe_compliant,
         access_granted=record.access_granted,
         snapshot_path=record.snapshot_path,
+        snapshot_data_url=read_image_data_url(record.snapshot_path),
         confidence=record.confidence,
         ppe_details=normalize_ppe_details(record.ppe_details),
         camera_source_type=record.camera_source_type,
@@ -293,6 +302,44 @@ def create_attendance_record(
     except Exception:
         pass
     return _serialize_attendance(record)
+
+
+@router.delete("/logs", response_model=AttendanceLogClearResponse)
+def clear_attendance_logs(db: Session = Depends(get_db)):
+    ppe_event_ids = [
+        event_id
+        for (event_id,) in db.query(Event.id).filter(Event.category == "PPE").all()
+    ]
+
+    attendance_deleted = db.query(Attendance).delete(synchronize_session=False)
+    reviews_deleted = db.query(GateReview).delete(synchronize_session=False)
+    alerts_deleted = 0
+    if ppe_event_ids:
+        alerts_deleted = (
+            db.query(Alert)
+            .filter(Alert.event_id.in_(ppe_event_ids))
+            .delete(synchronize_session=False)
+        )
+    ppe_events_deleted = (
+        db.query(Event)
+        .filter(Event.category == "PPE")
+        .delete(synchronize_session=False)
+    )
+
+    db.commit()
+    try:
+        from app.services.gate_attendance import gate_attendance_recognizer
+
+        gate_attendance_recognizer.invalidate_cache()
+    except Exception:
+        pass
+
+    return AttendanceLogClearResponse(
+        attendance_deleted=attendance_deleted,
+        reviews_deleted=reviews_deleted,
+        ppe_events_deleted=ppe_events_deleted,
+        alerts_deleted=alerts_deleted,
+    )
 
 
 @router.get("/ppe-policy", response_model=PpePolicyResponse)
@@ -474,13 +521,6 @@ def get_gate_direction_mode():
 @router.post("/gate-mode", response_model=GateDirectionModeResponse)
 def set_gate_direction_mode(payload: GateDirectionModeRequest):
     from app.services.gate_attendance import gate_attendance_recognizer
-    from app.camera.manager import camera_manager
-
-    if camera_manager.running:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Stop the active feed before changing between Check-In and Check-Out mode.",
-        )
 
     try:
         direction_mode = gate_attendance_recognizer.set_gate_direction_mode(payload.direction_mode)
