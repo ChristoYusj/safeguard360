@@ -123,6 +123,11 @@ The face-recognition model, PPE model, and MediaPipe runtime live on the local
 machine. This avoids turning every detection request into a cloud round trip and
 keeps the critical path under local control.
 
+These files are intentionally not committed to GitHub. The repository ships the
+code and folder structure, but the actual model weights remain local runtime
+assets because they are large, environment-specific, and part of the deployed
+machine state rather than normal source files.
+
 ### Local inference
 
 Gate recognition, PPE checking, and fleet analysis happen where the camera is.
@@ -198,6 +203,21 @@ safeguard360/
 `- roster-demo.csv           sample roster import file
 ```
 
+## Why `data/models/` Looks Empty On GitHub
+
+If you browse the repository on GitHub, `data/models/` may appear to contain
+only `.gitkeep` and documentation files. That is expected.
+
+The actual PPE and face-recognition model weights are intentionally ignored by
+Git because they are runtime dependencies, not source code. On the local demo
+machine, those files live under `data/models/`, but GitHub only keeps the
+folder structure and instructions.
+
+See:
+
+- [data/README.md](data/README.md)
+- [data/models/README.md](data/models/README.md)
+
 ## Documentation Map
 
 - [docs/architecture.md](docs/architecture.md)
@@ -260,6 +280,20 @@ Email delivery modes:
 - `MAIL_EXPOSE_LOCAL_RESET_LINKS=true`
   optional dev-only flag; exposes the reset link in the browser while using
   local mail capture
+
+### Required local model assets
+
+The repository does not include the actual model weights. You must place them
+locally before the full system can run:
+
+- PPE model:
+  `data/models/<your-ppe-model>.pt`
+- InsightFace weights:
+  `data/models/models/buffalo_l/`
+
+On the current demo machine, the PPE detector uses:
+
+- `data/models/ppe-hansung.pt`
 
 ### Run backend
 

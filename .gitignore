@@ -39,6 +39,7 @@ yarn-error.log*
 *.sqlite
 data/models/*
 !data/models/.gitkeep
+!data/models/README.md
 
 # Backend runtime data (enrollment thumbnails, attendance snapshots)
 backend/data/

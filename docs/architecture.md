@@ -102,6 +102,10 @@ its more interesting engineering properties:
 These pipelines are different in purpose, but they still share a single
 operational runtime.
 
+The actual model weights are local runtime assets. The repository documents
+where they belong, but GitHub intentionally does not include the PPE `.pt`
+file or the InsightFace model bundle.
+
 ## Persistence Layer
 
 Paths:

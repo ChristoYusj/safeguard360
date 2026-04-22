@@ -18,6 +18,10 @@ Camera Source
 The key design principle is to keep capture and inference local, then broadcast
 the resulting state to the frontend.
 
+One practical consequence is that the repository does not contain the actual
+runtime model weights. The local machine running the system must already have
+the PPE and face-recognition model files in place under `data/models/`.
+
 ## Attendance Workflow
 
 This is the main gate workflow from camera frame to attendance decision.
