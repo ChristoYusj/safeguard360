@@ -9,12 +9,16 @@ The Attendance page operates around two direction modes:
 - `Check-In` (`ENTRY`)
 - `Check-Out` (`EXIT`)
 
-The frontend can switch modes manually, and it also applies automatic mode
-switching for the selected shift roster:
+The frontend keeps direction switching under operator control. It does not
+automatically flip the gate direction anymore. Instead it applies boundary
+locks around the selected shift roster:
 
-- when all registered workers for the shift are on site, the page switches to
-  `Check-Out`
-- when nobody from the shift is on site, it switches back to `Check-In`
+- when all registered workers for the shift are on site, `Check-Out` becomes
+  the locked boundary state
+- when nobody from the shift is on site, `Check-In` becomes the locked
+  boundary state
+- when the site is in a partial state, operators can still switch modes
+  manually
 
 The backend allows this mode change while the feed is still running.
 
@@ -31,6 +35,7 @@ Live recognition outcomes include:
 - recognized worker
 - possible match
 - already checked in
+- all registered workers on site
 - not on site for exit mode
 - review required
 - unknown face
@@ -91,6 +96,8 @@ compact PPE summary.
 - exit mode narrows candidates to workers currently on site
 - approved exit reviews write a real checkout attendance record
 - completed checkout data appears in the worker roster under `Check-Out`
+- after an `ENTRY` + `EXIT` cycle is complete, the active worker card clears
+  from the Workforce Roster and the finished cycle remains in the Logs page
 
 ## Roster Display
 

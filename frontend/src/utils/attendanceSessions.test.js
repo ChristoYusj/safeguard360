@@ -116,8 +116,8 @@ describe("buildAttendanceSessionState", () => {
     });
   });
 
-  it("keeps denied PPE reviews on the worker roster even when no attendance record is created", () => {
-    const { rosterCards } = buildAttendanceSessionState({
+  it("does not keep resolved denied reviews in the active roster when no cycle is open", () => {
+    const { rosterCards, completedSessions } = buildAttendanceSessionState({
       persons: [
         {
           id: "worker-2",
@@ -150,17 +150,12 @@ describe("buildAttendanceSessionState", () => {
       ],
     });
 
-    expect(rosterCards).toHaveLength(1);
-    expect(rosterCards[0].registeredViolations).toHaveLength(1);
-    expect(rosterCards[0].registeredViolations[0]).toMatchObject({
-      id: "review:review-2",
-      decision: "Entry denied",
-      summary: "PPE status could not be confirmed automatically.",
-    });
+    expect(rosterCards).toHaveLength(0);
+    expect(completedSessions).toHaveLength(0);
   });
 
-  it("populates the latest checkout details for workers who have already left the site", () => {
-    const { rosterCards } = buildAttendanceSessionState({
+  it("moves a finished check-in plus check-out into completed sessions and clears the active roster", () => {
+    const { rosterCards, completedSessions } = buildAttendanceSessionState({
       persons: [
         {
           id: "worker-3",
@@ -209,14 +204,90 @@ describe("buildAttendanceSessionState", () => {
       gateReviews: [],
     });
 
+    expect(rosterCards).toHaveLength(0);
+    expect(completedSessions).toHaveLength(1);
+    expect(completedSessions[0].checkIn).toMatchObject({
+      id: "attendance-entry-3",
+      log_method: "AUTO",
+    });
+    expect(completedSessions[0].checkOut).toMatchObject({
+      id: "attendance-exit-3",
+      log_method: "AUTO",
+    });
+  });
+
+  it("keeps only the newest open cycle in the roster after an older cycle was completed", () => {
+    const { rosterCards, completedSessions } = buildAttendanceSessionState({
+      persons: [
+        {
+          id: "worker-4",
+          name: "Taylor Brooks",
+          employee_id: "EMP-400",
+          shift_id: "day",
+          is_active: true,
+        },
+      ],
+      attendanceRecords: [
+        {
+          id: "attendance-entry-4a",
+          person_id: "worker-4",
+          person_name: "Taylor Brooks",
+          person_employee_id: "EMP-400",
+          direction: "ENTRY",
+          timestamp: "2026-04-22T06:30:00.000Z",
+          access_granted: true,
+          ppe_compliant: true,
+          confidence: 0.95,
+          ppe_details: {
+            status: "compliant",
+            required_items: ["helmet", "vest"],
+            missing_items: [],
+          },
+          log_method: "AUTO",
+        },
+        {
+          id: "attendance-exit-4a",
+          person_id: "worker-4",
+          person_name: "Taylor Brooks",
+          person_employee_id: "EMP-400",
+          direction: "EXIT",
+          timestamp: "2026-04-22T11:30:00.000Z",
+          access_granted: true,
+          ppe_compliant: true,
+          confidence: 0.94,
+          ppe_details: {
+            status: "skipped",
+            required_items: [],
+            missing_items: [],
+          },
+          log_method: "AUTO",
+        },
+        {
+          id: "attendance-entry-4b",
+          person_id: "worker-4",
+          person_name: "Taylor Brooks",
+          person_employee_id: "EMP-400",
+          direction: "ENTRY",
+          timestamp: "2026-04-22T12:00:00.000Z",
+          access_granted: true,
+          ppe_compliant: true,
+          confidence: 0.96,
+          ppe_details: {
+            status: "compliant",
+            required_items: ["helmet", "vest"],
+            missing_items: [],
+          },
+          log_method: "AUTO",
+        },
+      ],
+      gateReviews: [],
+    });
+
+    expect(completedSessions).toHaveLength(1);
     expect(rosterCards).toHaveLength(1);
     expect(rosterCards[0].latestCheckIn).toMatchObject({
-      id: "attendance-entry-3",
-      logMethod: "AUTO",
+      id: "attendance-entry-4b",
     });
-    expect(rosterCards[0].latestCheckOut).toMatchObject({
-      id: "attendance-exit-3",
-      logMethod: "AUTO",
-    });
+    expect(rosterCards[0].latestCheckOut).toBeNull();
   });
 });

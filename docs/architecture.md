@@ -52,6 +52,7 @@ Responsibilities:
 - own the local camera
 - run gate recognition and PPE inference
 - run Fleet MediaPipe analysis
+- own authentication and password-reset orchestration
 - store local attendance and review state
 - emit live websocket frames and events
 - serve the UI with current state
@@ -63,6 +64,7 @@ Paths:
 - `data/safeguard360.db`
 - `backend/data/attendance/`
 - `backend/data/faces/`
+- `backend/data/mail/`
 
 Responsibilities:
 
@@ -71,6 +73,7 @@ Responsibilities:
 - snapshots and thumbnails
 - gate review persistence
 - event and alert history
+- locally captured auth emails when local mail transport is enabled
 
 ### Model Layer
 
@@ -155,6 +158,22 @@ Owns:
 
 This is the live bridge between the edge runtime and the browser UI.
 
+### Auth and Mail Services
+
+Primary files:
+
+- `backend/app/api/auth.py`
+- `backend/app/services/auth.py`
+- `backend/app/services/email.py`
+
+Own:
+
+- operator login and session issuance
+- password change and password reset token flow
+- registration approval links
+- mail transport selection between Resend and local capture
+- sender and reset-link configuration through environment settings
+
 ## Runtime Modes
 
 ### Idle
@@ -181,6 +200,7 @@ This is the live bridge between the edge runtime and the browser UI.
 - React frontend
 - backend HTTP API
 - authentication flows
+- transactional email delivery via provider APIs
 - settings / admin UI
 - docs and static project pages
 - chatbot request handling

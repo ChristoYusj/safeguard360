@@ -31,6 +31,40 @@ function normalizePpeDetails(details) {
   };
 }
 
+export function parseBackendTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(trimmed);
+  const normalized = hasTimezone
+    ? trimmed
+    : trimmed.includes("T")
+      ? `${trimmed}Z`
+      : `${trimmed.replace(" ", "T")}Z`;
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function normalizeReviewReasons(review) {
   return Array.isArray(review?.review_reasons) ? review.review_reasons : [];
 }
@@ -123,12 +157,7 @@ function buildManualOverrideDetail(record, matchedReview, directionLabel) {
 }
 
 function toTimestamp(value) {
-  if (!value) {
-    return 0;
-  }
-
-  const parsed = new Date(value).getTime();
-  return Number.isFinite(parsed) ? parsed : 0;
+  return parseBackendTimestamp(value)?.getTime() || 0;
 }
 
 export function getShiftIdForTimestamp(timestamp) {
@@ -136,7 +165,10 @@ export function getShiftIdForTimestamp(timestamp) {
     return null;
   }
 
-  const date = new Date(timestamp);
+  const date = parseBackendTimestamp(timestamp);
+  if (!date) {
+    return null;
+  }
   const hour = date.getHours();
 
   if (hour >= SHIFT_BLOCKS[0].startHour && hour < SHIFT_BLOCKS[0].endHour) {
@@ -307,19 +339,6 @@ function buildRosterViolationFromRecord(record, personsById, matchedReview = nul
   };
 }
 
-function createEmptyRosterCard(person) {
-  return {
-    id: person?.id || `person-name:${person?.name || "unknown"}`,
-    personId: person?.id || null,
-    personName: person?.name || "Unknown worker",
-    employeeId: person?.employee_id || null,
-    shiftId: person?.shift_id || null,
-    latestCheckIn: null,
-    latestCheckOut: null,
-    registeredViolations: [],
-  };
-}
-
 export function buildAttendanceSessionState({
   persons = [],
   attendanceRecords = [],
@@ -435,6 +454,9 @@ export function buildAttendanceSessionState({
     if (!violation) {
       return;
     }
+    if (!rosterCardsByPerson.has(rosterKey)) {
+      return;
+    }
 
     const existingIds = rosterViolationIdsByPerson.get(rosterKey) || new Set();
     if (existingIds.has(violation.id)) {
@@ -446,15 +468,6 @@ export function buildAttendanceSessionState({
     const card = upsertRosterCard(rosterKey, fallback);
     card.registeredViolations = [...card.registeredViolations, violation];
   };
-
-  persons
-    .filter((person) => person.is_active !== false)
-    .forEach((person) => {
-      rosterCardsByPerson.set(
-        person.id || `person-name:${person.name || "unknown"}`,
-        createEmptyRosterCard(person),
-      );
-    });
 
   activeSessions.forEach((session) => {
     const rosterKey = session.personId || `person-name:${session.personName || session.id}`;
@@ -479,48 +492,6 @@ export function buildAttendanceSessionState({
     existingCard.latestCheckOut = null;
 
     rosterCardsByPerson.set(rosterKey, existingCard);
-  });
-
-  sortedCompletedSessions.forEach((session) => {
-    const rosterKey = session.personId || `person-name:${session.personName || session.id}`;
-    const existingCard = upsertRosterCard(rosterKey, {
-      personId: session.personId || null,
-      personName: session.personName || "Unknown worker",
-      employeeId: session.employeeId || null,
-      shiftId: session.shiftId || null,
-    });
-
-    if (existingCard.latestCheckIn) {
-      return;
-    }
-
-    const hasNewerCheckout =
-      !existingCard.latestCheckOut ||
-      toTimestamp(session.checkOut?.timestamp) >
-        toTimestamp(existingCard.latestCheckOut?.timestamp);
-
-    if (!hasNewerCheckout) {
-      return;
-    }
-
-    existingCard.personId = session.personId || existingCard.personId;
-    existingCard.personName = session.personName || existingCard.personName;
-    existingCard.employeeId = session.employeeId || existingCard.employeeId;
-    existingCard.shiftId = session.shiftId || existingCard.shiftId;
-    existingCard.latestCheckIn = session.checkIn
-      ? buildRosterEvent(
-          session.checkIn,
-          personsById,
-          session.checkIn.manualOverrideReview,
-        )
-      : null;
-    existingCard.latestCheckOut = session.checkOut
-      ? buildRosterEvent(
-          session.checkOut,
-          personsById,
-          session.checkOut.manualOverrideReview,
-        )
-      : null;
   });
 
   grantedRecords.forEach((record) => {
@@ -567,23 +538,12 @@ export function buildAttendanceSessionState({
     );
   });
 
-  const rosterCards = [...rosterCardsByPerson.values()].sort((left, right) => {
-    const leftIsActive = Boolean(left.latestCheckIn);
-    const rightIsActive = Boolean(right.latestCheckIn);
-
-    if (leftIsActive !== rightIsActive) {
-      return rightIsActive ? 1 : -1;
-    }
-
-    if (leftIsActive && rightIsActive) {
-      return (
-        toTimestamp(right.latestCheckIn?.timestamp) -
-        toTimestamp(left.latestCheckIn?.timestamp)
-      );
-    }
-
-    return left.personName.localeCompare(right.personName);
-  });
+  const rosterCards = [...rosterCardsByPerson.values()].sort(
+    (left, right) =>
+      toTimestamp(right.latestCheckIn?.timestamp) -
+        toTimestamp(left.latestCheckIn?.timestamp) ||
+      left.personName.localeCompare(right.personName),
+  );
 
   return {
     activeSessions,

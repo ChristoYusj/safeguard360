@@ -67,6 +67,9 @@ class Settings(BaseSettings):
 
     # Admin / Email
     ADMIN_EMAIL: str = ""
+    MAIL_TRANSPORT: str = ""
+    MAIL_LOCAL_OUTBOX_DIR: str = "./backend/data/mail"
+    MAIL_EXPOSE_LOCAL_RESET_LINKS: bool = False
     RESEND_API_KEY: str = ""
     RESEND_FROM_EMAIL: str = ""
     FRONTEND_APP_URL: str = ""
@@ -104,6 +107,25 @@ class Settings(BaseSettings):
         return str(candidate.resolve())
 
     @property
+    def resolved_mail_transport(self) -> str:
+        raw = (self.MAIL_TRANSPORT or "").strip().lower()
+        if raw == "resend":
+            return "resend"
+        if raw == "local":
+            return "local"
+        if str(self.RESEND_API_KEY or "").strip() and str(self.RESEND_FROM_EMAIL or "").strip():
+            return "resend"
+        return "local"
+
+    @property
+    def resolved_mail_local_outbox_dir(self) -> str:
+        raw = (self.MAIL_LOCAL_OUTBOX_DIR or "").strip() or "./backend/data/mail"
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / raw
+        return str(candidate.resolve())
+
+    @property
     def cors_allowed_origins(self) -> list[str]:
         return [
             origin.strip()
@@ -122,10 +144,11 @@ class Settings(BaseSettings):
             "JWT_REFRESH_SECRET": self.JWT_REFRESH_SECRET,
             "JWT_APPROVAL_SECRET": self.JWT_APPROVAL_SECRET,
             "ADMIN_EMAIL": self.ADMIN_EMAIL,
-            "RESEND_API_KEY": self.RESEND_API_KEY,
-            "RESEND_FROM_EMAIL": self.RESEND_FROM_EMAIL,
             "TOTP_ENCRYPTION_KEY": self.TOTP_ENCRYPTION_KEY,
         }
+        if self.resolved_mail_transport == "resend":
+            required["RESEND_API_KEY"] = self.RESEND_API_KEY
+            required["RESEND_FROM_EMAIL"] = self.RESEND_FROM_EMAIL
         return [key for key, value in required.items() if not str(value or "").strip()]
 
     model_config = SettingsConfigDict(

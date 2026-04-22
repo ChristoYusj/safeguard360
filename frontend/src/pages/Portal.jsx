@@ -73,6 +73,7 @@ function Portal() {
   const [registerSuccess, setRegisterSuccess] = useState("");
   const [resetError, setResetError] = useState("");
   const [resetSuccess, setResetSuccess] = useState("");
+  const [resetLocalUrl, setResetLocalUrl] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const nextPath = location.state?.from?.pathname || "/modules";
@@ -149,6 +150,7 @@ function Portal() {
 
     setResetError("");
     setResetSuccess("");
+    setResetLocalUrl("");
     setIsSubmitting(true);
 
     try {
@@ -158,6 +160,7 @@ function Portal() {
       setResetSuccess(
         response.message || "If the account exists, a password reset link has been sent.",
       );
+      setResetLocalUrl(response.local_reset_url || "");
       setResetForm({ email: "" });
     } catch (error) {
       setResetError(error.message || "Unable to send a password reset link.");
@@ -432,6 +435,7 @@ function Portal() {
                         setAuthWarning(null);
                         setResetError("");
                         setResetSuccess("");
+                        setResetLocalUrl("");
                         setResetForm({ email: loginForm.email.trim() });
                       }}
                       className="text-sm font-semibold text-[var(--color-accent-primary)] transition hover:opacity-80"
@@ -528,6 +532,19 @@ function Portal() {
                       <p className="text-sm font-semibold" style={{ color: "var(--color-success)" }}>
                         {resetSuccess}
                       </p>
+                      {resetLocalUrl ? (
+                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                          <p className="text-xs font-medium text-secondary">
+                            Local mode: open the reset page directly on this machine.
+                          </p>
+                          <a
+                            href={resetLocalUrl}
+                            className="text-sm font-semibold text-[var(--color-accent-primary)] transition hover:opacity-80"
+                          >
+                            Open reset page
+                          </a>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -554,6 +571,7 @@ function Portal() {
                       setAuthWarning(null);
                       setResetError("");
                       setResetSuccess("");
+                      setResetLocalUrl("");
                     }}
                     className="btn btn-secondary h-14 w-full text-base font-semibold"
                   >

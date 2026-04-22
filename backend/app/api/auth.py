@@ -219,14 +219,17 @@ def request_operator_password_reset(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    request_password_reset(
+    result = request_password_reset(
         db=db,
         request=request,
         email=payload.email,
     )
-    return {
+    response = {
         "message": "If the account exists, a password reset link has been sent.",
     }
+    if result:
+        response.update(result)
+    return response
 
 
 @router.post("/password-reset/confirm")

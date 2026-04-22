@@ -21,7 +21,7 @@ vision models, stores the local database, and pushes live state to the UI.
 - recognizes enrolled workers at the gate
 - checks helmet and vest compliance
 - supports `Check-In` and `Check-Out`
-- auto-switches gate direction based on who is currently on site
+- keeps operator-controlled gate direction with roster-aware lock boundaries
 - creates operator reviews when confidence or PPE rules require approval
 - stores attendance snapshots and audit state locally
 
@@ -192,6 +192,8 @@ safeguard360/
   End-to-end gate, fleet, websocket, and data flows
 - [docs/attendance-gate.md](docs/attendance-gate.md)
   Attendance and PPE behavior from the operator workflow side
+- [docs/auth-email.md](docs/auth-email.md)
+  Authentication, password-reset delivery modes, and mail configuration
 
 ## Local Setup
 
@@ -222,9 +224,24 @@ Important variables:
 - `JWT_REFRESH_SECRET`
 - `JWT_APPROVAL_SECRET`
 - `ADMIN_EMAIL`
+- `MAIL_TRANSPORT`
+- `MAIL_LOCAL_OUTBOX_DIR`
+- `MAIL_EXPOSE_LOCAL_RESET_LINKS`
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
+- `FRONTEND_APP_URL`
 - `TOTP_ENCRYPTION_KEY`
+
+Email delivery modes:
+
+- `MAIL_TRANSPORT=local`
+  local-first mode; auth emails are captured locally
+- `MAIL_TRANSPORT=resend`
+  production mode; requires `RESEND_API_KEY` and `RESEND_FROM_EMAIL` on a
+  verified Resend sending domain
+- `MAIL_EXPOSE_LOCAL_RESET_LINKS=true`
+  optional dev-only flag; exposes the reset link in the browser while using
+  local mail capture
 
 ### Run backend
 
@@ -257,9 +274,10 @@ Frontend default origin:
 1. Start the camera feed.
 2. Enable recognition mode.
 3. Use `Check-In` while workers are arriving.
-4. When everyone registered for the selected shift is on site, the UI switches
-   to `Check-Out`.
-5. When nobody is on site, it switches back to `Check-In`.
+4. Switch to `Check-Out` manually when you are ready to begin exit scanning.
+5. Boundary locks still apply:
+   `Check-Out` is locked once all registered workers are on site, and
+   `Check-In` is locked once nobody is on site.
 
 ### PPE handling
 
@@ -274,6 +292,16 @@ Frontend default origin:
 - detection and overlay are driven by the backend runtime, not the browser
 - driver events flow through the same websocket event channel as the rest of
   the platform
+
+### Password reset
+
+- resend mode sends real email from the verified sending domain
+- local mode does not depend on third-party email delivery
+- local mode captures reset emails under `backend/data/mail/`
+- the browser only exposes the reset link directly if
+  `MAIL_EXPOSE_LOCAL_RESET_LINKS=true`
+- `FRONTEND_APP_URL` should be set so emailed reset links point at the correct
+  frontend origin
 
 ## Useful Commands
 

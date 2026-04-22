@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import math
 import re
 import secrets
@@ -37,7 +38,7 @@ from app.services.audit import (
     AUDIT_TWO_FACTOR_ENABLED,
     record_audit_event,
 )
-from app.services.email import send_email_via_resend
+from app.services.email import EmailDeliveryError, send_transactional_email
 from app.services.rbac import (
     ADMIN_ROLE,
     ALL_USER_STATUSES,
@@ -71,6 +72,7 @@ PASSWORD_HAS_SPECIAL = re.compile(r"[^A-Za-z0-9]")
 
 _IP_FAILURES: dict[str, deque[datetime]] = defaultdict(deque)
 _IP_FAILURES_LOCK = Lock()
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -794,7 +796,7 @@ def register_pending_operator(
 
     try:
         approve_url, reject_url = build_approval_urls(request, pending_user)
-        send_email_via_resend(
+        send_transactional_email(
             to_email=get_settings().ADMIN_EMAIL,
             subject="SafeGuard 360 operator approval required",
             html=_build_approval_email_html(
@@ -803,6 +805,13 @@ def register_pending_operator(
                 reject_url=reject_url,
             ),
         )
+    except EmailDeliveryError as exc:
+        db.delete(pending_user)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account approval email delivery is currently unavailable.",
+        ) from exc
     except Exception:
         db.delete(pending_user)
         db.commit()
@@ -816,24 +825,44 @@ def request_password_reset(
     request: Request,
     *,
     email: str,
-) -> None:
+) -> dict[str, str]:
     normalized_email = normalize_email(email)
     if not validate_email(normalized_email):
-        return
+        return {}
 
     user = db.query(User).filter(User.email == normalized_email).first()
     if not user or user.status not in {USER_STATUS_ACTIVE, USER_STATUS_RESTRICTED}:
-        return
+        return {}
 
     reset_url = build_password_reset_url(request, user)
-    send_email_via_resend(
-        to_email=user.email,
-        subject="SafeGuard 360 password reset",
-        html=_build_password_reset_email_html(
-            full_name=user.full_name,
-            reset_url=reset_url,
-        ),
-    )
+    try:
+        delivery = send_transactional_email(
+            to_email=user.email,
+            subject="SafeGuard 360 password reset",
+            html=_build_password_reset_email_html(
+                full_name=user.full_name,
+                reset_url=reset_url,
+            ),
+        )
+    except EmailDeliveryError as exc:
+        logger.warning(
+            "Password reset email delivery failed for %s",
+            user.email,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset delivery is currently unavailable.",
+        ) from exc
+
+    if delivery.transport == "local":
+        result = {"delivery_mode": "local"}
+        if get_settings().MAIL_EXPOSE_LOCAL_RESET_LINKS:
+            result["local_reset_url"] = reset_url
+        if delivery.artifact_path:
+            result["local_capture_path"] = delivery.artifact_path
+        return result
+    return {}
 
 
 def reset_password_with_token(

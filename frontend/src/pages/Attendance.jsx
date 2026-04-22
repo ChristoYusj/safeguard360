@@ -36,6 +36,7 @@ import {
 import {
   buildAttendanceSessionState,
   getShiftIdForTimestamp,
+  parseBackendTimestamp,
 } from "../utils/attendanceSessions";
 
 const SHIFT_BLOCKS = [
@@ -250,7 +251,12 @@ function formatEventTime(value) {
     return "--";
   }
 
-  return new Date(value).toLocaleTimeString("en-US", {
+  const parsed = parseBackendTimestamp(value);
+  if (!parsed) {
+    return "--";
+  }
+
+  return parsed.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -261,7 +267,12 @@ function formatEventTimestamp(value) {
     return "--";
   }
 
-  return new Date(value).toLocaleString("en-US", {
+  const parsed = parseBackendTimestamp(value);
+  if (!parsed) {
+    return "--";
+  }
+
+  return parsed.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -1041,6 +1052,9 @@ function Attendance() {
       person.is_active !== false &&
       (!person.shift_id || person.shift_id === selectedShift.id),
   );
+  const registeredWorkerIds = new Set(
+    registeredWorkers.map((person) => person.id).filter(Boolean),
+  );
   const activeShiftSessions = activeSessions.filter(
     (session) => !session.shiftId || session.shiftId === selectedShift.id,
   );
@@ -1053,23 +1067,17 @@ function Attendance() {
     gateDirectionMode === "ENTRY" &&
     gateStatus?.person_id &&
     activeSessionPersonIds.has(gateStatus.person_id);
-  const globalCheckedInCount = activeSessions.length;
-  const preStartDirectionMode = globalCheckedInCount > 0 ? "EXIT" : "ENTRY";
-  // Direction hot-swap: Check-In and Check-Out are both always selectable. The
-  // only time the buttons are greyed out is while a toggle is actually flying
-  // to the server. `modeLocked` is kept for display text below but no longer
-  // disables the buttons.
-  const modeLocked = Boolean(cameraState?.active) || isStarting;
-  const canUseCheckIn = !isChangingGateDirection;
-  const canUseCheckOut = !isChangingGateDirection;
   const onSiteCount = activeShiftSessions.length;
   const checkInCandidateCount = Math.max(registeredWorkers.length - onSiteCount, 0);
-  const autoDirectionMode =
-    registeredWorkers.length > 0 && onSiteCount >= registeredWorkers.length
-      ? "EXIT"
-      : onSiteCount === 0
-        ? "ENTRY"
-        : null;
+  const allRegisteredWorkersOnSite =
+    registeredWorkers.length > 0 && onSiteCount >= registeredWorkers.length;
+  const noWorkersOnSite = onSiteCount === 0;
+  const checkoutModeLocked =
+    gateDirectionMode === "EXIT" && allRegisteredWorkersOnSite;
+  const checkInModeLocked =
+    gateDirectionMode === "ENTRY" && noWorkersOnSite;
+  const canUseCheckIn = !isChangingGateDirection && !checkoutModeLocked;
+  const canUseCheckOut = !isChangingGateDirection && !checkInModeLocked;
 
   const onSiteValue =
     registeredWorkers.length > 0
@@ -1098,19 +1106,33 @@ function Attendance() {
     hasLiveFrame &&
     !isChangingRecognitionMode &&
     !isStarting;
+  const entryModeNeedsManualCheckout =
+    gateModeEnabled && gateDirectionMode === "ENTRY" && allRegisteredWorkersOnSite;
+  const siteFullKnownWorkerDetected =
+    entryModeNeedsManualCheckout &&
+    gateStatus?.person_id &&
+    registeredWorkerIds.has(gateStatus.person_id);
+  const siteFullUnknownDetected =
+    entryModeNeedsManualCheckout &&
+    !gateStatus?.person_id &&
+    gateStatus?.match_status === "unknown_face";
   const recognitionStatusDetail = !cameraState?.active
     ? "Start the live feed first, then enable recognition to begin check-in/check-out scanning."
     : !hasLiveFrame
       ? "Waiting for a stable live frame before recognition can be enabled."
-    : !gateModeEnabled
-      ? null
-      : gateStatus?.message ||
-        (redundantEntryScanActive
-          ? `${gateStatus?.person_name || "Worker"} is already checked in.`
-          : null) ||
-        (gateDirectionMode === "EXIT"
-        ? "Recognition is scanning checked-in workers for checkout."
-        : "Recognition is scanning enrolled workers for check-in.");
+      : !gateModeEnabled
+        ? null
+        : siteFullKnownWorkerDetected
+          ? "All registered workers are on site. Press Check-Out to begin checkout scanning."
+          : siteFullUnknownDetected
+            ? "Unknown face."
+            : gateStatus?.message ||
+              (redundantEntryScanActive
+                ? `${gateStatus?.person_name || "Worker"} is already checked in.`
+                : null) ||
+              (gateDirectionMode === "EXIT"
+                ? "Recognition is scanning checked-in workers for checkout."
+                : "Recognition is scanning enrolled workers for check-in.");
   const livePpeDetails = normalizePpeDetails(gateStatus?.ppe_details);
   const livePpeSummary = !ppeSystemEnabled
     ? "PPE detection is turned off — workers are admitted on face match alone."
@@ -1141,100 +1163,6 @@ function Attendance() {
     )
       ? error
       : null;
-
-  useEffect(() => {
-    if (
-      cameraState?.active ||
-      isStarting ||
-      isChangingGateDirection ||
-      gateDirectionMode === preStartDirectionMode
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const syncPreStartDirection = async () => {
-      try {
-        const payload = await updateAttendanceGateMode(preStartDirectionMode);
-        if (!cancelled) {
-          setGateDirectionMode(payload.direction_mode);
-        }
-      } catch (syncError) {
-        if (!cancelled) {
-          console.error("[Attendance] Failed to sync pre-start gate direction", syncError);
-        }
-      }
-    };
-
-    syncPreStartDirection();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    cameraState?.active,
-    gateDirectionMode,
-    isChangingGateDirection,
-    isStarting,
-    preStartDirectionMode,
-  ]);
-
-  useEffect(() => {
-    if (
-      !cameraState?.active ||
-      !gateModeEnabled ||
-      !autoDirectionMode ||
-      gateDirectionMode === autoDirectionMode ||
-      isChangingGateDirection ||
-      isChangingRecognitionMode ||
-      isStarting
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const syncAutoDirection = async () => {
-      try {
-        const payload = await updateAttendanceGateMode(autoDirectionMode);
-        if (!cancelled) {
-          setGateDirectionMode(payload.direction_mode);
-          setGateStatus((currentStatus) =>
-            currentStatus
-              ? {
-                  ...currentStatus,
-                  direction_mode: payload.direction_mode,
-                  candidate_scope: payload.candidate_scope,
-                  message:
-                    payload.direction_mode === "EXIT"
-                      ? "All registered workers are checked in. Switched to Check-Out mode."
-                      : "No workers are currently on site. Switched to Check-In mode.",
-                }
-              : currentStatus,
-          );
-        }
-      } catch (syncError) {
-        if (!cancelled) {
-          console.error("[Attendance] Failed to auto-switch gate direction", syncError);
-        }
-      }
-    };
-
-    syncAutoDirection();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    autoDirectionMode,
-    cameraState?.active,
-    gateDirectionMode,
-    gateModeEnabled,
-    isChangingGateDirection,
-    isChangingRecognitionMode,
-    isStarting,
-  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1323,16 +1251,10 @@ function Attendance() {
   const handleStart = async () => {
     const fallbackSourceId = selectedSourceId || "webcam:0";
     const parsed = parseSourceId(fallbackSourceId);
-    const targetDirectionMode = preStartDirectionMode;
 
     setError(null);
     setIsStarting(true);
     try {
-      if (gateDirectionMode !== targetDirectionMode) {
-        const payload = await updateAttendanceGateMode(targetDirectionMode);
-        setGateDirectionMode(payload.direction_mode);
-      }
-
       let started = false;
       let lastError = null;
 
@@ -1756,7 +1678,13 @@ function Attendance() {
                         </div>
                         {cameraState?.active ? (
                           <p className="text-sm text-secondary">
-                            Switch freely between Check-In and Check-Out without stopping the camera.
+                            {checkoutModeLocked
+                              ? "Check-Out is locked because all registered workers are on site."
+                              : checkInModeLocked
+                                ? "Check-In is locked because nobody is currently on site."
+                              : allRegisteredWorkersOnSite && gateDirectionMode === "ENTRY"
+                                ? "All registered workers are on site. Press Check-Out manually to begin checkout scanning."
+                                : "Switch between Check-In and Check-Out without stopping the camera."}
                           </p>
                         ) : null}
                       </div>
@@ -1980,7 +1908,7 @@ function Attendance() {
                     </h2>
                   </div>
                 </div>
-                <span className="badge badge-accent">{rosterEntries.length} workers</span>
+                <span className="badge badge-accent">{rosterEntries.length} active</span>
               </div>
 
               <div className="panel__content">
@@ -2155,7 +2083,10 @@ function Attendance() {
                   <div className="rounded-2xl border border-dashed border-default px-5 py-12 text-center">
                     <UsersIcon size={30} className="mx-auto mb-3 text-accent" />
                     <p className="text-base font-semibold text-primary">
-                      No workers enrolled for this shift
+                      No active attendance cycles for this shift
+                    </p>
+                    <p className="mt-2 text-sm text-secondary">
+                      Completed check-in and check-out cycles clear from the roster automatically.
                     </p>
                   </div>
                 )}

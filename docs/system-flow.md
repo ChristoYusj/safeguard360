@@ -99,15 +99,24 @@ The UI then updates:
 - checkout is logged when approved
 - roster updates with latest exit record
 
-### Auto direction switching
+### Direction boundaries
 
 On the Attendance page:
 
-- when all registered workers for the selected shift are on site, UI switches
-  to `Check-Out`
-- when nobody is on site, UI switches back to `Check-In`
+- operators switch between `Check-In` and `Check-Out` manually
+- when all registered workers for the selected shift are on site,
+  `Check-Out` becomes the enforced boundary state
+- when nobody is on site, `Check-In` becomes the enforced boundary state
+- when the site is partially occupied, either direction can be selected
 
 The backend accepts this change while the live feed is still running.
+
+### Cycle completion
+
+- once a worker has both an `ENTRY` and `EXIT`, that cycle is treated as
+  complete
+- completed cycles no longer keep a card alive in the Workforce Roster
+- completed cycles remain available in the Logs page under attendance history
 
 ## PPE Flow
 
@@ -163,6 +172,25 @@ Primary behavior:
 - send queued event payloads
 
 This makes the browser a live control surface over the local runtime.
+
+## Authentication and Email Flow
+
+### Password reset request
+
+- operator submits account email from the portal
+- backend normalizes the address and verifies the account is reset-eligible
+- backend creates a signed, one-time reset token
+- backend builds the reset URL using `FRONTEND_APP_URL` when configured
+
+### Delivery modes
+
+- `resend`
+  sends the password reset via Resend using the configured verified sender
+- `local`
+  captures the email under `backend/data/mail/` for local-first testing
+
+The browser does not expose the reset URL in local mode unless
+`MAIL_EXPOSE_LOCAL_RESET_LINKS=true`.
 
 ## Failure/Dependency Boundaries
 

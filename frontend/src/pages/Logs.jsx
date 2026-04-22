@@ -18,6 +18,7 @@ import {
   readPlatformLogs,
 } from "../utils/platformLogs";
 import { buildAttendanceSessionState } from "../utils/attendanceSessions";
+import { parseBackendTimestamp } from "../utils/attendanceSessions";
 import {
   canAccessAttendance,
   canAccessDrivers,
@@ -53,7 +54,12 @@ function formatSessionTime(timestamp) {
     return "--";
   }
 
-  return new Date(timestamp).toLocaleTimeString("en-US", {
+  const parsed = parseBackendTimestamp(timestamp);
+  if (!parsed) {
+    return "--";
+  }
+
+  return parsed.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -202,9 +208,10 @@ function Logs() {
         attendanceRecords,
         gateReviews,
       }).completedSessions.filter((session) => {
-        const endedAt = new Date(
-          session.checkOut?.timestamp || session.checkIn?.timestamp || 0,
-        ).getTime();
+        const endedAt =
+          parseBackendTimestamp(
+            session.checkOut?.timestamp || session.checkIn?.timestamp || null,
+          )?.getTime() || 0;
         return endedAt > (filters.attendanceClearedAt || 0);
       }),
     [persons, attendanceRecords, gateReviews, filters.attendanceClearedAt],
