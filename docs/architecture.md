@@ -1,63 +1,108 @@
 # SafeGuard 360 Architecture
 
-This document describes SafeGuard 360 as a system, not just as a repo.
+`SafeGuard 360 is a local-first edge safety platform whose browser UI sits on
+top of a backend runtime that owns the camera, runs computer-vision inference,
+stores state locally, and streams live results back to operators.`
+
+This document explains the system as an engineering design, not just as a list
+of folders.
 
 ## Product Boundary
 
-SafeGuard 360 is a local-first edge safety platform with a browser-based
-operator UI.
-
-It has two clear sides:
+The project has two major sides:
 
 - the `web application side`
-  UI, API calls, operator workflows, and dashboards
+  pages, controls, operator workflows, and visualizations
 - the `local edge runtime side`
-  camera ownership, local inference, local database, model files, and live
-  event generation
+  camera ownership, local inference, local persistence, and live event
+  generation
 
-This distinction matters because the system cannot be understood or deployed
-correctly if it is treated like a normal stateless website.
+That split is the key architectural idea. SafeGuard 360 is not a typical app
+where the browser contains most of the behavior. The browser is the presentation
+and control layer. The site machine runs the actual safety runtime.
 
-## Deployment Shape
+## Layered View
 
-### Browser / UI Layer
+```mermaid
+flowchart LR
+    A["Camera Source"] --> B["Backend Orchestration Layer"]
+    B --> C["Inference Layer"]
+    C --> D["Persistence Layer"]
+    B --> E["WebSocket / REST Output"]
+    E --> F["Frontend UI Layer"]
+    B --> G["External Integrations"]
+    G --> B
+```
 
-Files:
+## Frontend UI Layer
+
+Primary code:
 
 - `frontend/src/pages/*`
 - `frontend/src/services/api.js`
 
 Responsibilities:
 
-- render operator controls and state
-- render roster, review queue, and event history
-- display the live preview stream
-- send operator actions to the backend
-- subscribe to websocket updates
+- render live operator dashboards
+- render roster, review queue, logs, and settings
+- send commands to the backend over HTTP
+- subscribe to websocket updates for live status and frames
 
-The browser does not run the face, PPE, or driver models.
+What it does **not** do:
 
-### Backend / Edge Layer
+- own the camera
+- run PPE detection
+- run face recognition
+- run driver analysis
 
-Files:
+This distinction matters because it explains why the project remains usable as
+a local operational system even if the browser is just one tab among many. The
+frontend is the operator view into the runtime, not the runtime itself.
+
+## Backend Orchestration Layer
+
+Primary code:
 
 - `backend/app/factory.py`
 - `backend/app/api/*`
-- `backend/app/camera/*`
-- `backend/app/inference/*`
 - `backend/app/services/*`
+- `backend/app/camera/*`
 
 Responsibilities:
 
-- own the local camera
-- run gate recognition and PPE inference
-- run Fleet MediaPipe analysis
-- own authentication and password-reset orchestration
-- store local attendance and review state
-- emit live websocket frames and events
-- serve the UI with current state
+- own the active camera session
+- choose whether the system is in gate mode or driver mode
+- route frames to the correct runtime
+- expose control endpoints for the frontend
+- convert runtime decisions into stored state and live websocket events
 
-### Local Persistence Layer
+This layer is the conductor. It does not replace the inference code, but it
+ensures that inference, persistence, and operator actions stay synchronized.
+
+## Inference Layer
+
+Primary code:
+
+- `backend/app/inference/*`
+- `backend/app/camera/driver_runtime.py`
+
+Responsibilities:
+
+- face matching against enrolled workers
+- PPE analysis for helmet and vest compliance
+- MediaPipe-based fleet monitoring
+
+The project contains more than one computer-vision pipeline, which is one of
+its more interesting engineering properties:
+
+- gate recognition is identity-focused
+- PPE detection is compliance-focused
+- fleet monitoring is state/behavior-focused
+
+These pipelines are different in purpose, but they still share a single
+operational runtime.
+
+## Persistence Layer
 
 Paths:
 
@@ -68,179 +113,178 @@ Paths:
 
 Responsibilities:
 
+- operator accounts
+- enrolled workers
 - attendance records
-- worker roster / enrollment state
-- snapshots and thumbnails
-- gate review persistence
-- event and alert history
-- locally captured auth emails when local mail transport is enabled
+- gate reviews
+- events and alerts
+- snapshots and enrollment media
+- locally captured auth emails in local mail mode
 
-### Model Layer
+Persistence is important in this project because the system is not meant to be
+only a live feed. A real safety platform should preserve what happened, who was
+involved, and what the operator decided.
 
-Paths:
+## External Integrations Layer
 
-- `data/models/ppe-hansung.pt`
-- `data/models/models/buffalo_l/`
+Primary examples:
 
-Responsibilities:
+- `Groq` for the chatbot
+- `Resend` for outbound auth email
 
-- PPE object detection
-- face detection / embedding generation
+These integrations extend the platform, but they are not the core safety
+runtime. That is an important design boundary:
 
-These are runtime dependencies, not normal web assets.
+- Attendance, PPE, Fleet, and Logs remain local-first
+- chatbot and email add platform completeness around the local core
 
-## Ownership Map
-
-### Camera Manager
+## Why a Shared Camera Manager Exists
 
 Primary file:
 
 - `backend/app/camera/manager.py`
 
-Owns:
+The camera manager exists because camera access is a scarce resource. If the
+gate page and fleet page each opened the camera independently, the project
+would suffer from:
 
-- active camera source
-- raw frame slot
-- preview encoding
-- gate worker loop
-- Fleet worker loop
-- module ownership and mode switching
+- conflicting access to the same device
+- duplicated capture loops
+- inconsistent live state
+- race conditions between modules
 
-The camera manager is the single arbitration point between Attendance and
-Fleet. It prevents independent camera access from fragmenting runtime state.
+The shared camera manager solves this by acting as the single arbitration point
+for camera ownership. It opens the source once, stores the latest frame, and
+lets the active runtime consume that frame without forcing the browser or other
+modules to touch the camera directly.
 
-### Gate Attendance Recognizer
+## How Gate and Fleet Avoid Conflicting
 
-Primary file:
+Gate monitoring and Fleet monitoring both want live frames, but they should not
+run as unrelated camera apps inside the same product.
 
-- `backend/app/services/gate_attendance.py`
+They avoid conflict by sharing:
 
-Owns:
+- one camera manager
+- one active mode selection
+- one live preview path
+- one websocket broadcasting layer
 
-- face quality gating
-- candidate matching against enrolled workers
-- PPE evaluation and review-reason generation
-- entry vs exit planning
-- pending review lifecycle
-- attendance logging decisions
-- live gate overlay state
+At any given moment, the backend decides which mode is active:
 
-### Fleet Driver Runtime
+- `gate`
+  attendance, PPE, review, and roster state
+- `driver`
+  fatigue/distraction and driver overlay state
 
-Primary files:
+This keeps the runtime deterministic and avoids two separate modules fighting
+over capture timing or camera ownership.
 
-- `backend/app/camera/driver_runtime.py`
-- `backend/app/inference/driver.py`
+## Request/Response and Realtime Split
 
-Owns:
+SafeGuard 360 uses two communication patterns because they serve different
+needs.
 
-- MediaPipe detector lifecycle
-- landmark extraction
-- fatigue/distraction state
-- driver overlay state
-- emitted driver events
+### REST API
 
-Current architecture keeps the MediaPipe path in-process and tied to the
-backend runtime rather than a separate subprocess worker.
+Use REST when the frontend needs a controlled request/response interaction:
 
-### Websocket Broadcaster
+- get logs
+- load roster data
+- decide a review
+- change gate mode
+- sign in
+- request password reset
 
-Primary file:
+REST is good for explicit commands and persisted data retrieval.
 
-- `backend/app/factory.py`
+### WebSocket
 
-Owns:
+Use websocket when the frontend needs changing live state:
 
-- preview frame broadcast
-- status payload broadcast
-- gate event broadcast
-- driver event broadcast
+- preview frames
+- gate status
+- driver status
+- event notifications
 
-This is the live bridge between the edge runtime and the browser UI.
+Websocket is good for continuous updates that should appear immediately without
+polling.
 
-### Auth and Mail Services
+This split keeps the system easier to reason about:
 
-Primary files:
+- REST = command and retrieval path
+- websocket = live operational state path
 
-- `backend/app/api/auth.py`
-- `backend/app/services/auth.py`
-- `backend/app/services/email.py`
+## Data and Control Flow
 
-Own:
+The most useful compact summary is:
 
-- operator login and session issuance
-- password change and password reset token flow
-- registration approval links
-- mail transport selection between Resend and local capture
-- sender and reset-link configuration through environment settings
+```text
+Operator action
+  -> backend API
+  -> service/runtime logic
+  -> database/event/state update
+  -> websocket/status refresh
+  -> frontend UI update
+```
+
+Examples:
+
+- operator approves a review
+  -> backend resolves the review
+  -> attendance may be logged
+  -> logs/state update
+  -> frontend refreshes roster and review queue
+
+- camera sees a worker
+  -> runtime evaluates face/PPE
+  -> backend creates live gate state
+  -> websocket pushes the result
+  -> frontend updates the feed
 
 ## Runtime Modes
 
 ### Idle
 
-- camera not in active inference mode
-- no gate or Fleet processing
+- camera not actively used for inference
+- no gate or fleet worker is driving decisions
 
 ### Gate
 
-- gate recognition worker active
-- gate overlay state active
-- attendance and review logic active
+- attendance recognition is active
+- PPE logic is active
+- review and roster state is active
 
 ### Driver
 
-- Fleet MediaPipe runtime active
-- driver overlay state active
-- fatigue/distraction event generation active
+- fleet monitoring is active
+- MediaPipe driver state is active
+- fatigue/distraction events can be emitted
 
-## Hosted Pieces Vs Local Pieces
+## Source-Controlled vs Local-Only Data
 
-### Pieces that could be hosted in a more normal web environment
-
-- React frontend
-- backend HTTP API
-- authentication flows
-- transactional email delivery via provider APIs
-- settings / admin UI
-- docs and static project pages
-- chatbot request handling
-
-### Pieces that are inherently local / edge-bound in the current design
-
-- webcam access
-- gate preview processing
-- MediaPipe Fleet analysis
-- YOLO PPE inference
-- face recognition runtime
-- local snapshots and face media
-- local model files
-- local SQLite state
-
-That means SafeGuard 360 is best understood as an edge deployment with a web
-dashboard, not a pure SaaS browser app.
-
-## Security And Data Shape
-
-### Source-controlled assets
+### Source-controlled
 
 - code
 - docs
-- config templates
+- templates
 - tests
 
-### Local-only assets
+### Local-only
 
 - `.env`
 - SQLite database
 - model weights
+- captured attendance media
 - enrollment images
-- attendance snapshots
-- logs and caches
+- runtime logs and caches
 
-This separation is intentional because the local-only assets are environment
-data, secrets, or runtime outputs.
+This separation is part of the architecture, not just a Git preference. The
+project is designed to keep operational data and machine-specific dependencies
+local to the site runtime.
 
 ## Related Docs
 
 - [system-flow.md](system-flow.md)
 - [attendance-gate.md](attendance-gate.md)
+- [auth-email.md](auth-email.md)

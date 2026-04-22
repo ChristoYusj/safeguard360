@@ -1,175 +1,189 @@
 # SafeGuard 360
 
-SafeGuard 360 is a local-first industrial safety monitoring platform built for
-an on-site Windows machine. It combines:
+SafeGuard 360 is a `local-first industrial safety monitoring platform` built
+for an on-site machine, not a browser-only website. It combines live gate
+attendance, PPE compliance checking, fleet driver monitoring, operator review
+workflows, logs, and a safety assistant into one system. The browser dashboard
+is the operator surface, but the real product lives in the local runtime that
+owns the camera, runs the models, stores the local database, and pushes live
+state to the UI.
 
-- gate attendance with face recognition
-- PPE compliance scanning
-- fleet driver monitoring
-- operator review workflows
-- live alerts and logs
-- a safety assistant backed by Groq
+The important idea behind the project is unification. In many real sites,
+attendance, PPE enforcement, driver monitoring, operator logs, and follow-up
+actions live in separate manual processes. SafeGuard 360 treats them as one
+operational loop: a camera observes the site, local inference decides what is
+happening, the backend records and broadcasts that state, and the frontend lets
+an operator act on it immediately.
 
-This is not just a website. The browser dashboard is only one part of the
-system. The product depends on a local runtime that owns the camera, runs the
-vision models, stores the local database, and pushes live state to the UI.
+This architecture is intentional. The project uses local camera access, local
+model files, local inference, and local persistence because the core use cases
+are time-sensitive and operationally critical. A gate decision or a driver
+fatigue event should not depend on sending raw frames to a distant cloud
+service first. The platform therefore behaves more like an edge safety station
+with a web dashboard than a normal hosted web app.
 
-## What The Product Does
+If a new CCE student opens this repository, the right mental model is:
+`camera input -> backend runtime -> local AI inference -> database and event state -> websocket updates -> operator UI`.
+Everything else in the project supports that loop.
 
-### Attendance / Smart Gate
+## Why This Project Exists
 
-- recognizes enrolled workers at the gate
-- checks helmet and vest compliance
-- supports `Check-In` and `Check-Out`
-- keeps operator-controlled gate direction with roster-aware lock boundaries
-- creates operator reviews when confidence or PPE rules require approval
-- stores attendance snapshots and audit state locally
+Industrial safety workflows are often fragmented:
+
+- attendance is logged manually or in a separate system
+- PPE violations are spotted inconsistently
+- driver monitoring is isolated from gate monitoring
+- review decisions are not tied cleanly to logs and history
+- operators have to look at several tools to understand one situation
+
+SafeGuard 360 addresses that fragmentation by combining:
+
+- `who is this person?`
+- `are they compliant?`
+- `should the system auto-approve or ask for review?`
+- `what happened earlier today?`
+- `what is happening in fleet monitoring right now?`
+
+The result is a platform that is both real-time and auditable.
+
+## Core Modules
+
+### Attendance & PPE Detection
+
+This is the gate-entry module. The system reads frames from the active camera,
+detects and matches faces against enrolled workers, evaluates helmet and vest
+compliance, and decides whether a worker should be checked in automatically,
+routed to review, or denied. It also manages `Check-In` and `Check-Out` mode
+behavior and keeps the Workforce Roster aligned with active attendance cycles.
 
 ### Fleet Monitoring
 
-- runs MediaPipe-based live driver analysis
-- monitors fatigue, distraction, and seatbelt-related signals
-- overlays live driver status on the preview
-- emits driver events over the realtime event channel
+This module uses MediaPipe-based driver analysis to monitor the operator-facing
+fleet feed. It tracks face and landmark state, computes fatigue or distraction
+signals, and overlays the live result in the dashboard. It shares the same
+overall runtime design as the gate system: the browser displays state, but the
+local backend performs the work.
 
-### Enrollment / Roster
+### Logs & Review Flow
 
-- stores worker profiles and face embeddings
-- supports photo and short-video enrollment
-- supports shift assignment and roster import
+The system does not stop at live detection. It records attendance, PPE-related
+decisions, gate reviews, and other relevant events so the operator can inspect
+what happened later. Completed attendance cycles leave the active roster and
+remain available in Logs, which makes the platform behave like an operational
+system rather than a transient demo.
 
-### Operator Dashboard
+### Operator Authentication
 
-- shows live gate/fleet feed
-- displays review queue and workforce roster
-- shows PPE state, attendance outcomes, and event history
-- consumes a single backend websocket stream for frames and events
+The project includes a real operator-auth flow with registration approval,
+sign-in, logout, password changes, two-factor authentication, and password
+reset. This matters in the project because the dashboard is meant to be used by
+real operators, not anonymous viewers.
 
-### Safety Assistant
+### Safety Chatbot
 
-- uses Groq only
-- receives a live site snapshot each turn
-- answers operational questions about attendance, PPE, alerts, and driver
-  events
+The chatbot is a Groq-backed assistant that sits on top of the operational
+state. Its role is not to replace the safety logic, but to help an operator ask
+questions about the system state in natural language. This turns the project
+from a pure monitoring tool into a broader safety operations platform.
 
-## System Shape
+## How The System Works Together
 
-SafeGuard 360 has two major runtime sides.
+The cleanest way to understand the project is to follow one frame from the
+camera through the stack:
 
-### Hosted / Web UI Pieces
+1. A camera frame enters the local backend through the shared camera manager.
+2. The backend decides which runtime is active: gate recognition or fleet
+   monitoring.
+3. The correct inference path processes the newest available frame locally.
+4. The backend converts that result into structured state:
+   attendance decisions, PPE status, driver state, reviews, logs, or events.
+5. That state is written to local persistence when needed.
+6. The backend broadcasts live status and frames through the websocket layer.
+7. The frontend renders the live state and lets the operator respond.
 
-These are normal web-application pieces:
+The frontend is therefore the control surface, not the inference engine. It
+asks for data over HTTP, listens for live state over websocket, and presents
+the result to the operator. The backend owns the runtime. The database owns the
+history. The models provide the raw computer-vision intelligence.
 
-- `frontend/`
-  React + Vite dashboard
-- browser pages for:
-  - Attendance
-  - Dashboard / Fleet
-  - Enrollment
-  - Logs
-  - Settings
-  - AI Chatbot
-- HTTP API calls to the backend
-- websocket subscription for live frames and events
+## Why It Is Local-First
 
-These pieces render operator state, controls, and history. They do not perform
-the computer-vision inference themselves.
+SafeGuard 360 is local-first for technical and operational reasons.
 
-### Local Edge Runtime Pieces
+### Camera ownership
 
-These are the parts that make the product an on-site system:
+Only one process should truly own the active camera session. If multiple pages
+or modules tried to access the camera independently, gate monitoring and fleet
+monitoring would conflict. The backend solves this with a shared camera manager
+that arbitrates camera access and feeds the active runtime.
 
-- `backend/`
-  FastAPI server and orchestration layer
-- local camera ownership via the shared camera manager
-- local inference:
-  - InsightFace / ArcFace for face recognition
-  - YOLO PPE model for helmet/vest checks
-  - MediaPipe for Fleet Monitoring
-- local SQLite database
-- local attendance snapshots and enrollment media
-- local model files under `data/models/`
+### Local model files
 
-This side is the core of the product. Without it, the UI would only be a shell.
+The face-recognition model, PPE model, and MediaPipe runtime live on the local
+machine. This avoids turning every detection request into a cloud round trip and
+keeps the critical path under local control.
 
-## Core Runtime Responsibilities
+### Local inference
 
-### Shared Camera Manager
+Gate recognition, PPE checking, and fleet analysis happen where the camera is.
+This reduces latency and makes the system usable even in environments where
+internet connectivity is weak or where sending raw safety footage elsewhere is
+undesirable.
 
-The backend uses one shared camera manager to:
+### Local persistence
 
-- open the active source
-- publish the latest raw frame
-- run preview rendering without blocking capture
-- feed gate recognition and driver monitoring workers
-- prevent competing modules from fighting over the camera
+Attendance history, snapshots, enrollment media, and review state are stored
+locally. That keeps the system auditable while still respecting the local-first
+nature of the platform.
 
-### Gate Runtime
+### Better fit for industrial workflows
 
-The gate runtime is responsible for:
+This architecture is a better fit for industrial safety than a pure cloud web
+app because the project is making operational decisions close to the physical
+environment. The browser is important, but the site machine is the real runtime
+center.
 
-- face quality checks
-- enrolled-worker matching
-- PPE evaluation
-- review creation
-- attendance logging
-- entry/exit logic
-- live gate overlay state
+## End-to-End Example Workflow
 
-### Fleet Runtime
+A good way to understand the whole platform is to follow one worker through a
+complete cycle:
 
-The Fleet runtime is responsible for:
+1. A worker arrives at the gate and appears in the live feed.
+2. The backend captures the newest frame and runs face quality checks.
+3. If the face is good enough, the recognizer compares it against enrolled
+   workers.
+4. Once a likely worker is identified, PPE detection checks for helmet and
+   vest compliance.
+5. If confidence and PPE rules are good enough, the worker is checked in
+   automatically.
+6. If something is uncertain, the system creates a review item and the operator
+   decides what to do.
+7. The roster updates to show the worker's active attendance state and compact
+   PPE summary.
+8. Later, when the worker checks out, the exit record is created.
+9. Once both `ENTRY` and `EXIT` exist, the active card leaves the roster and
+   the completed cycle remains in Logs.
 
-- MediaPipe initialization
-- face/landmark tracking
-- fatigue and distraction state
-- live overlay state
-- driver event emission
+That single example already touches the camera manager, recognizer, PPE model,
+review flow, persistence, websocket updates, and UI rendering.
 
-## Realtime Data Flow
+## What Judges Should Notice
 
-The backend emits:
+When presenting this project, the important technical points are not just that
+it has multiple pages. The real engineering value is:
 
-- live JPEG preview frames
-- camera status payloads
-- gate state
-- driver state
-- gate events
-- driver events
-
-All of that is pushed through the websocket layer so the dashboard stays in
-sync with the local runtime.
-
-## Required Models, Data, And Hardware
-
-### Hardware
-
-- Windows machine
-- webcam or compatible local camera source
-- enough CPU/GPU headroom for local inference
-
-### Required model files
-
-- PPE model:
-  `data/models/<your-ppe-model>.pt`
-- InsightFace weights:
-  `data/models/models/buffalo_l/`
-
-Current local configuration points the PPE detector at:
-
-- [data/models/ppe-hansung.pt](/C:/Users/chris/Documents/New%20project/safeguard360/data/models/ppe-hansung.pt)
-
-### Local data stores
-
-- SQLite database:
-  `data/safeguard360.db`
-- attendance snapshots:
-  `backend/data/attendance/`
-- enrollment face media:
-  `backend/data/faces/`
-
-These are intentionally local/runtime-oriented and are not treated as normal
-source-controlled app assets.
+- `unified system design`
+  Attendance, PPE, fleet monitoring, logs, auth, and assistant behavior are
+  part of one platform rather than separate demos.
+- `real-time local inference`
+  The project performs meaningful computer-vision work on the site machine.
+- `multiple CV pipelines in one runtime`
+  Face recognition, PPE detection, and driver monitoring coexist in one system.
+- `operator workflow completeness`
+  The platform supports live decisions, review handling, logging, and history.
+- `persistence and auditability`
+  Results do not disappear after a live scan; they become part of an
+  operational record.
 
 ## Repository Layout
 
@@ -178,7 +192,7 @@ safeguard360/
 |- backend/                  FastAPI app, inference, camera runtime, tests
 |- frontend/                 React operator dashboard
 |- data/                     SQLite DB and local model weights
-|- docs/                     product, architecture, and operations docs
+|- docs/                     product, architecture, and presentation docs
 |- .env.example              environment template
 |- reset_admin_password.py   admin recovery utility
 `- roster-demo.csv           sample roster import file
@@ -187,13 +201,17 @@ safeguard360/
 ## Documentation Map
 
 - [docs/architecture.md](docs/architecture.md)
-  System boundaries, ownership, deployment shape, and runtime responsibilities
+  Engineering explanation of the system layers, ownership, and runtime design
 - [docs/system-flow.md](docs/system-flow.md)
-  End-to-end gate, fleet, websocket, and data flows
+  End-to-end runtime workflows from camera frame to UI outcome
 - [docs/attendance-gate.md](docs/attendance-gate.md)
-  Attendance and PPE behavior from the operator workflow side
+  Operator-facing behavior of Attendance and PPE handling
 - [docs/auth-email.md](docs/auth-email.md)
-  Authentication, password-reset delivery modes, and mail configuration
+  Authentication, password-reset flow, and mail-delivery behavior
+- [docs/demo-runbook.md](docs/demo-runbook.md)
+  Live presentation order and talking points
+- [docs/judges-brief.md](docs/judges-brief.md)
+  High-signal summary for judges and first-time readers
 
 ## Local Setup
 
@@ -266,42 +284,6 @@ npm run dev
 Frontend default origin:
 
 - `http://127.0.0.1:5173`
-
-## Operator Notes
-
-### Attendance / Gate
-
-1. Start the camera feed.
-2. Enable recognition mode.
-3. Use `Check-In` while workers are arriving.
-4. Switch to `Check-Out` manually when you are ready to begin exit scanning.
-5. Boundary locks still apply:
-   `Check-Out` is locked once all registered workers are on site, and
-   `Check-In` is locked once nobody is on site.
-
-### PPE handling
-
-- `Compliant` means required items were confirmed.
-- `Flagged` means PPE issues were recorded.
-- unresolved gate reviews stay in the review queue
-- resolved PPE findings move into the worker roster view
-
-### Fleet Monitoring
-
-- Fleet uses the local MediaPipe runtime
-- detection and overlay are driven by the backend runtime, not the browser
-- driver events flow through the same websocket event channel as the rest of
-  the platform
-
-### Password reset
-
-- resend mode sends real email from the verified sending domain
-- local mode does not depend on third-party email delivery
-- local mode captures reset emails under `backend/data/mail/`
-- the browser only exposes the reset link directly if
-  `MAIL_EXPOSE_LOCAL_RESET_LINKS=true`
-- `FRONTEND_APP_URL` should be set so emailed reset links point at the correct
-  frontend origin
 
 ## Useful Commands
 

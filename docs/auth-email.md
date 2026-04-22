@@ -1,18 +1,18 @@
 # Authentication and Email Delivery
 
-This document describes the current authentication and password-reset
-configuration in SafeGuard 360.
+This document explains how the authentication and password-reset subsystem
+works, and why it is designed the way it is.
 
-## Auth Responsibilities
+## What This Subsystem Covers
 
-The auth layer covers:
+SafeGuard 360 includes:
 
 - operator sign-in
 - session refresh and logout
-- two-factor setup and verification
 - operator registration approval
-- password changes for authenticated users
-- password reset requests and reset-token confirmation
+- two-factor setup and verification
+- authenticated password change
+- password reset by emailed link
 
 Primary files:
 
@@ -23,82 +23,132 @@ Primary files:
 - `frontend/src/pages/Portal.jsx`
 - `frontend/src/pages/ResetPassword.jsx`
 
-## Password Reset Flow
+## Why Authentication Matters Here
 
-### Request phase
+The dashboard is not meant to be a public viewer. It controls gate decisions,
+shows workforce history, exposes review decisions, and can affect live site
+operations. That is why the project includes a full auth path instead of a
+simple demo login.
 
-1. Operator submits an email from the portal reset form.
-2. Backend normalizes the email and looks up an active or restricted account.
-3. If the account is eligible, backend creates a signed password-reset token.
-4. Backend builds the frontend reset URL.
-5. Backend sends the email through the configured mail transport.
+## Password Reset: Internal Flow
 
-The public API still responds with a generic success message for missing
-accounts so the reset form does not leak account existence.
+Password reset is a two-phase process.
 
-### Confirm phase
+### Phase 1: Request
 
-1. Operator opens the reset link.
-2. Frontend sends the token and new password to
-   `/api/auth/password-reset/confirm`.
-3. Backend validates the token, updates the password hash, increments the
-   reset-token version, and clears old refresh sessions.
+1. The operator submits an email in the portal reset form.
+2. The backend normalizes the email and checks whether the account is eligible
+   for reset.
+3. If the account is valid, the backend creates a signed, time-limited reset
+   token.
+4. The backend builds the frontend reset URL.
+5. The backend sends the email through the configured mail transport.
+
+The public API still responds with a generic success message when an account is
+missing, so the UI does not expose account existence directly.
+
+### Phase 2: Confirmation
+
+1. The operator opens the reset link.
+2. The frontend sends the token and new password to the backend.
+3. The backend validates the token.
+4. The password hash is updated.
+5. The password-reset token version is advanced so old reset links become
+   invalid.
+6. Old refresh sessions are cleared.
+
+This design ensures that password reset is not just a UI gesture. It is a real
+security state transition.
+
+## How Frontend and Backend Work Together
+
+The frontend and backend divide responsibility clearly.
+
+### Frontend
+
+- collects credentials or reset form input
+- sends explicit REST requests
+- displays success or failure messages
+- renders the reset-password page after the email link is opened
+
+### Backend
+
+- validates identity-related inputs
+- creates or verifies signed tokens
+- controls whether the reset request is valid
+- chooses the delivery transport
+- updates the stored password and session state
+
+This split is important because the browser should never be trusted to own the
+security logic. The frontend collects intent. The backend performs the
+security-sensitive work.
 
 ## Mail Transport Modes
 
-### Resend mode
+The project supports two mail behaviors.
 
-Use this in real deployments:
+### Resend verified-domain mode
+
+Use this for real email delivery:
 
 - `MAIL_TRANSPORT=resend`
 - `RESEND_API_KEY=<your resend key>`
 - `RESEND_FROM_EMAIL=no-reply@yourdomain.com`
 - `FRONTEND_APP_URL=http://your-frontend-origin`
 
-Requirements:
+What this means operationally:
 
-- Resend domain is verified
-- sender address belongs to that verified domain
+- the domain must be verified in Resend
+- the sender address must belong to that verified domain
+- reset links are delivered as actual email
+
+This is the production-style path because it behaves like a real operator
+system, not a dev tool.
 
 ### Local capture mode
 
-Use this for local-first development when you do not want to depend on a live
-provider:
+Use this when you want local-first testing without relying on a live provider:
 
 - `MAIL_TRANSPORT=local`
 - `MAIL_LOCAL_OUTBOX_DIR=./backend/data/mail`
 
 Behavior:
 
-- emails are written to the local outbox directory
-- reset requests do not require a third-party provider
-- browser-side direct reset-link exposure is disabled by default
+- emails are written to a local outbox directory
+- the project can still exercise the reset flow without third-party delivery
 
-### Dev-only reset-link exposure
+This exists because the project is local-first and should still be testable
+when provider setup is incomplete or internet access is unreliable.
 
-Optional:
+## Why Direct Reset-Link Exposure Is Dangerous By Default
+
+There is a convenience feature:
 
 - `MAIL_EXPOSE_LOCAL_RESET_LINKS=true`
 
-Use this only when you explicitly want the browser to show the direct local
-reset link on the machine running the app.
+When enabled in local mode, the browser can expose the direct reset link on the
+same machine. This is useful for solo development, but dangerous on a shared
+operator terminal because someone could request a reset for a valid account and
+immediately use the local link.
 
-This is convenient for solo development, but it should not be the default for
-shared operator terminals.
+That is why direct link exposure is opt-in, not the default.
 
-## Security Notes
+## Security Design Notes
 
 - reset tokens are signed and time-limited
-- password-reset confirmation invalidates prior reset versions
-- old refresh sessions are cleared on reset
-- local reset-link exposure is opt-in
+- old reset links become invalid after a successful reset
+- prior refresh sessions are cleared on reset
 - provider-specific raw errors are not shown directly to the operator UI
+- direct browser exposure of local reset links is disabled by default
+
+These choices make the subsystem safer while still keeping it practical to
+develop locally.
 
 ## Operational Notes
 
-- if real password-reset emails fail, verify the sending domain and sender
-  address first
-- `FRONTEND_APP_URL` should be set in environments where the backend origin
-  differs from the frontend origin
-- local captured emails live under `backend/data/mail/` and are runtime data,
-  not source-controlled assets
+- if real password-reset email fails, first verify the sender domain and sender
+  address
+- `FRONTEND_APP_URL` should be configured so reset links point to the correct
+  frontend origin
+- local captured emails under `backend/data/mail/` are runtime data, not
+  source-controlled project assets

@@ -1,116 +1,161 @@
 # Attendance and Gate Operations
 
-This document describes the current Attendance behavior in the app.
+This document describes the current Attendance and PPE behavior from the
+operator's point of view. It is a behavior document, not an implementation
+document.
 
-## Live Gate Modes
+## Gate Direction Modes
 
-The Attendance page operates around two direction modes:
+The Attendance page works with two gate directions:
 
-- `Check-In` (`ENTRY`)
-- `Check-Out` (`EXIT`)
+- `Check-In`
+  workers are arriving on site
+- `Check-Out`
+  workers are leaving the site
 
-The frontend keeps direction switching under operator control. It does not
-automatically flip the gate direction anymore. Instead it applies boundary
-locks around the selected shift roster:
+The operator switches modes manually. The UI does not auto-flip the direction
+for you. Instead it applies `roster-based lock boundaries` so the operator
+cannot move the system into an impossible state.
 
-- when all registered workers for the shift are on site, `Check-Out` becomes
-  the locked boundary state
-- when nobody from the shift is on site, `Check-In` becomes the locked
-  boundary state
-- when the site is in a partial state, operators can still switch modes
-  manually
+### Boundary behavior
 
-The backend allows this mode change while the feed is still running.
+- if `all registered workers are on site`, `Check-Out` is the locked boundary
+  state
+- if `nobody is on site`, `Check-In` is the locked boundary state
+- if the site is in a partial state, the operator may switch manually
 
-## Recognition Behavior
+This keeps the workflow controlled while still preventing obviously incorrect
+mode selections.
 
-The live gate feed uses:
+## What The Live Feed Messages Mean
 
-- face quality checks
-- enrolled-worker matching
-- PPE evaluation when PPE monitoring or enforcement is active
+The live feed can show several operator-facing outcomes.
 
-Live recognition outcomes include:
+### Recognized worker
 
-- recognized worker
-- possible match
-- already checked in
-- all registered workers on site
-- not on site for exit mode
-- review required
-- unknown face
+The system matched a worker strongly enough for the current mode and can either
+log attendance directly or continue through PPE/review logic.
 
-## Review Queue
+### Already checked in
 
-The review queue is for known workers who need operator approval.
+The worker is already on site during `Check-In`, so the system does not create
+a duplicate entry.
 
-Typical review triggers:
+### All registered workers on site
 
-- face confidence fell into the review band
+The site is already full for the selected shift and the operator should use
+`Check-Out` if exit scanning is intended.
+
+### Not on site for exit mode
+
+The face may belong to a known worker, but that worker is not currently on site
+for the purposes of checkout.
+
+### Review required
+
+The system has enough information to believe this is a known worker, but not
+enough confidence or compliance certainty to approve the action automatically.
+
+### Unknown face
+
+No enrolled worker match was strong enough to treat the face as a known person.
+
+## Review Queue Behavior
+
+The review queue is the operator decision point for gate cases that should not
+be auto-resolved.
+
+### Typical reasons a review appears
+
+- face confidence is in the review band
 - PPE enforcement blocked automatic approval
-- PPE status was uncertain
+- the PPE result is uncertain
 
-Operator actions:
+### Operator actions
 
-- `Accept`: approves the review and logs attendance
-- `Deny`: keeps the worker out and resolves the review without attendance
+- `Accept`
+  resolves the review and logs attendance when appropriate
+- `Deny`
+  resolves the review without writing attendance
 
-The review queue is displayed inside the live feed area rather than as a
-separate full-width panel.
+The review queue is intentionally placed inside the live feed area, because it
+belongs to the active gate workflow.
 
 ## PPE Behavior
 
-The PPE Command Center is now limited to:
+The system separates `live PPE control` from `recorded PPE outcome`.
 
+### PPE Command Center
+
+This area is only for:
+
+- the current PPE mode (`Off`, `Monitor`, `Enforce`)
 - live scan status
-- mode switching between `Off`, `Monitor`, and `Enforce`
+- live gate messaging
 
-Resolved PPE findings no longer live there. Instead:
+### Workforce Roster PPE summary
 
-- active PPE status is shown during the live gate scan
-- registered PPE findings are attached to the worker card in the Workforce
-  Roster
-- worker cards show a compact PPE summary in the check-in section
+Recorded PPE findings are shown in the worker card, not in the command center.
+The current compact presentation is:
 
-Current worker-card PPE presentation:
+- `Compliant`
+  required PPE was confirmed clearly enough
+- `Flagged`
+  PPE issues were recorded
+- small red badges such as `Missing helmet` and `Missing vest`
 
-- `Compliant` for clear scans
-- `Flagged` when PPE issues were recorded
-- small red badges for missing required items such as `Missing helmet` and
-  `Missing vest`
-
-The roster intentionally hides review timestamps and override wording in that
-compact PPE summary.
+This keeps the command center focused on current runtime status and the roster
+focused on recorded worker outcomes.
 
 ## Attendance Logging Rules
 
-### Check-In
+### Check-In behavior
 
-- a worker can be automatically checked in when the match is strong enough and
-  PPE rules allow it
-- if the worker is already on site, the feed reports `already checked in`
-  instead of creating a duplicate entry
+- a worker can be auto-checked in when recognition and PPE rules allow it
+- duplicate check-ins are prevented
+- review decisions can still produce a valid entry when accepted
 
-### Check-Out
+### Check-Out behavior
 
-- exit mode narrows candidates to workers currently on site
-- approved exit reviews write a real checkout attendance record
-- completed checkout data appears in the worker roster under `Check-Out`
-- after an `ENTRY` + `EXIT` cycle is complete, the active worker card clears
-  from the Workforce Roster and the finished cycle remains in the Logs page
+- checkout is limited to workers currently considered on site
+- approved exit reviews create a real checkout record
+- checkout details appear in the worker card while the cycle is active
 
-## Roster Display
+## Workforce Roster Behavior
 
-The Workforce Roster is the long-lived operator view of what happened.
+The Workforce Roster shows `active attendance cycles`, not all historical
+records.
 
-Each worker card can show:
+Each active worker card can include:
 
 - latest check-in details
-- latest check-out details
+- latest checkout details if the cycle is still active in view
+- camera source
 - face match confidence
-- source camera
 - log method
-- compact PPE summary for the check-in record
+- compact PPE summary
 
-This keeps the PPE Command Center focused on live operation and the roster
-focused on recorded outcomes.
+## Full Cycle Movement: Roster to Logs
+
+One of the most important current behaviors is how a complete attendance cycle
+is handled.
+
+### While the cycle is active
+
+After `ENTRY`, the worker remains visible in the Workforce Roster because the
+system still considers that attendance cycle open.
+
+### When the cycle completes
+
+After the same worker also gets a valid `EXIT`:
+
+- the active worker card is cleared from the Workforce Roster
+- the completed cycle remains in Logs as part of attendance history
+
+This is intentional:
+
+- the roster answers `who is currently active`
+- the logs answer `what already happened`
+
+That separation keeps the live gate page readable and keeps history in the
+correct place.

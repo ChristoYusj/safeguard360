@@ -1,228 +1,265 @@
 # SafeGuard 360 System Flow
 
-This document focuses on runtime flow: what happens from camera frame to UI.
+This document explains what happens at runtime, step by step. The focus is not
+just on *which component exists*, but on *how the system behaves from input to
+output* and *why it is designed that way*.
 
-## High-Level Flow
+## High-Level Runtime Flow
 
 ```text
 Camera Source
   -> Camera Manager
-  -> Raw Frame Slot
-     -> Preview Worker
-     -> Gate Worker
-     -> Fleet Worker
-  -> WebSocket Broadcaster
+  -> Active Runtime (Gate or Fleet)
+  -> Local state / DB / events
+  -> WebSocket + REST output
   -> Browser UI
 ```
 
-The capture loop stays lean. Preview rendering and inference happen in separate
-workers so the camera device FPS is not dominated by one expensive path.
+The key design principle is to keep capture and inference local, then broadcast
+the resulting state to the frontend.
 
-## Gate Flow
+## Attendance Workflow
 
-### Step 1: Capture
+This is the main gate workflow from camera frame to attendance decision.
 
-- the camera manager opens the selected source
-- frames are read into the shared raw-frame slot
-- no heavy inference work happens inside the capture loop
+### 1. Camera capture
 
-### Step 2: Gate worker consumes latest frame
+The shared camera manager opens the selected source and keeps the newest raw
+frame available. This is done centrally so the project does not create multiple
+competing camera sessions.
 
-- gate mode is active
-- the worker pulls the newest frame only
-- stale intermediate frames may be skipped intentionally
+### 2. Gate runtime consumes the latest frame
 
-### Step 3: Face quality + matching
+When Attendance mode is active, the gate runtime pulls the newest frame. It can
+skip stale intermediate frames, because in a live system current state is more
+important than processing every frame in sequence.
 
-The gate recognizer performs:
+### 3. Face quality and identification
 
-- face detection
-- blur / size / quality checks
-- embedding generation
-- similarity comparison against enrolled workers
+The gate runtime checks whether the frame contains a usable face:
 
-### Step 4: PPE scan
+- size and visibility
+- image quality
+- candidate match against enrolled workers
 
-For likely entry candidates:
+This stage exists so the system does not commit attendance decisions on weak or
+ambiguous inputs.
 
-- the PPE model runs on the subject region
-- required items are evaluated
-- missing/uncertain PPE becomes part of the live state
+### 4. PPE evaluation
 
-### Step 5: Decision path
+If the frame is relevant for entry logic, the PPE detector checks whether
+helmet and vest expectations are satisfied. The result becomes part of the live
+gate state and influences whether the system can auto-approve the action.
 
-Possible outcomes include:
+### 5. Decision path
 
-- confirmed automatic entry
-- review required
+At this point the system chooses between:
+
+- automatic check-in
+- automatic checkout
 - already checked in
+- all registered workers on site
 - not on site for exit mode
+- review required
 - unknown face
 
-### Step 6: Persistence
+This decision stage is important because the project is not just detecting; it
+is translating detection into operator-facing workflow outcomes.
 
-Depending on outcome, the backend may create:
+### 6. Persistence and broadcast
 
-- `Attendance`
-- `GateReview`
-- `Event`
-- `Alert`
-- snapshot files under `backend/data/attendance/`
+If the decision creates or changes operational state, the backend may:
 
-### Step 7: Realtime broadcast
+- write an attendance record
+- create a review item
+- store a snapshot path
+- emit an event
 
-The broadcaster emits:
+It then broadcasts updated live status through the websocket layer so the UI
+changes immediately.
 
-- preview frame
-- gate state payload
-- attendance or review event payload
+## PPE Review Workflow
 
-The UI then updates:
+The PPE path becomes more interesting when the system cannot safely auto-accept
+the result.
 
-- live feed
-- review queue
-- roster state
-- PPE command center status
+### 1. PPE creates uncertainty or non-compliance
 
-## Attendance State Flow
+This can happen because:
 
-### Check-In
+- required gear appears missing
+- the PPE result is uncertain
+- the policy requires manual review
 
-- worker appears at gate
-- system matches face
-- PPE is evaluated if enabled
-- entry is logged automatically or routed to review
+### 2. Review item is created
 
-### Check-Out
+Instead of silently failing or logging a misleading attendance record, the
+backend creates a gate review entry. This gives the operator a controlled
+decision point.
 
-- exit mode narrows matching to workers currently on site
-- checkout is logged when approved
-- roster updates with latest exit record
+### 3. Review queue appears in the live feed area
 
-### Direction boundaries
+The frontend shows the review inside the Attendance experience so the operator
+can resolve it without switching contexts.
 
-On the Attendance page:
+### 4. Operator decision
 
-- operators switch between `Check-In` and `Check-Out` manually
-- when all registered workers for the selected shift are on site,
-  `Check-Out` becomes the enforced boundary state
-- when nobody is on site, `Check-In` becomes the enforced boundary state
-- when the site is partially occupied, either direction can be selected
+- `Accept`
+  resolves the review and logs attendance if that action is allowed
+- `Deny`
+  resolves the review without logging attendance
 
-The backend accepts this change while the live feed is still running.
+### 5. Outcome placement
 
-### Cycle completion
+The project separates *live control* from *recorded outcome*:
 
-- once a worker has both an `ENTRY` and `EXIT`, that cycle is treated as
-  complete
-- completed cycles no longer keep a card alive in the Workforce Roster
-- completed cycles remain available in the Logs page under attendance history
+- the PPE Command Center is only for current live mode/status
+- the Workforce Roster shows the recorded PPE result attached to the worker
+- completed attendance cycles later appear in Logs
 
-## PPE Flow
+This design keeps the command center from becoming a mixed live/history panel.
 
-### Live scan status
+## Fleet Workflow
 
-The PPE Command Center is used for:
+Fleet Monitoring follows the same overall architecture, but the runtime goal is
+different.
 
-- current PPE mode
-- live scan status
-- current detector result messaging
+### 1. Camera capture
 
-### Recorded outcomes
+The shared camera manager owns the active source and feeds the latest frame to
+the driver runtime.
 
-Resolved PPE outcomes are shown in the Workforce Roster instead of staying in
-the command center. The roster is the long-lived operator record of what
-happened to each worker.
+### 2. Driver runtime consumes the latest frame
 
-## Fleet Flow
+The driver path also prioritizes current state over processing every frame. In
+live monitoring, responsiveness matters more than replay precision.
 
-### Step 1: Capture
+### 3. MediaPipe analysis
 
-- the same camera manager owns the Fleet camera session
-- raw frames are published to the shared slot
-
-### Step 2: Fleet worker consumes latest frame
-
-- driver mode is active
-- the Fleet worker pulls the latest frame on its own cadence
-
-### Step 3: MediaPipe runtime
-
-The driver runtime:
+The in-process driver runtime:
 
 - initializes MediaPipe once
-- tracks face landmarks
-- computes fatigue/distraction signals
-- updates driver state
+- attaches to the driver face
+- tracks landmarks
+- computes fatigue/distraction state
 
-### Step 4: Overlay + events
+The rebuilt design avoids unnecessary repeated initialization and keeps the
+monitoring loop stable.
 
-- preview worker renders live landmark/driver overlays
-- driver events are queued
-- websocket broadcaster pushes both status and events to the UI
+### 4. Overlay and event generation
 
-## Websocket Flow
+The backend updates driver state and can emit driver events. The frontend then
+renders the live overlay and operator-visible status.
 
-Primary behavior:
+This workflow proves that SafeGuard 360 is not limited to gate attendance. It
+supports a second real-time vision path inside the same platform.
 
-- send encoded preview frames
-- send periodic status payloads
-- attach gate state when mode is `gate`
-- attach driver state when mode is `driver`
-- send queued event payloads
+## Logs Workflow
 
-This makes the browser a live control surface over the local runtime.
+Logs are where the platform proves it is not only a live-screen demo.
 
-## Authentication and Email Flow
+### 1. Active cycle in roster
 
-### Password reset request
+When a worker checks in, the worker appears in the Workforce Roster as an
+active cycle.
 
-- operator submits account email from the portal
-- backend normalizes the address and verifies the account is reset-eligible
-- backend creates a signed, one-time reset token
-- backend builds the reset URL using `FRONTEND_APP_URL` when configured
+### 2. Checkout completes the cycle
+
+When the same worker later checks out, the system now has both:
+
+- `ENTRY`
+- `EXIT`
+
+### 3. Roster clears, logs retain history
+
+The active worker card is removed from the roster because the cycle is finished.
+The record remains in Logs, where completed attendance sessions are meant to
+live.
+
+This design keeps the roster focused on *who is currently in play* while Logs
+answer *what already happened*.
+
+## Authentication and Password Reset Workflow
+
+SafeGuard 360 includes full operator access control because the dashboard is
+meant for real operators, not anonymous access.
+
+### Account request and approval
+
+1. A user requests access through the portal.
+2. Backend creates a pending operator account.
+3. Backend generates signed approval links.
+4. Admin approval is delivered through the configured mail path.
+
+This makes registration part of the operational workflow rather than a hidden
+manual database step.
+
+### Sign-in
+
+1. Operator submits email and password.
+2. Backend validates credentials and account status.
+3. If enabled, two-factor verification is required.
+4. Backend issues access and refresh tokens.
+
+### Password reset
+
+1. Operator requests a password reset.
+2. Backend normalizes the email and checks whether the account is reset-eligible.
+3. Backend creates a signed, time-limited reset token.
+4. Backend builds the reset URL using `FRONTEND_APP_URL` when configured.
+5. Backend delivers the reset email through the configured mail transport.
 
 ### Delivery modes
 
 - `resend`
-  sends the password reset via Resend using the configured verified sender
+  sends through the verified-domain Resend sender for real delivery
 - `local`
-  captures the email under `backend/data/mail/` for local-first testing
+  captures the email locally for development use
 
-The browser does not expose the reset URL in local mode unless
-`MAIL_EXPOSE_LOCAL_RESET_LINKS=true`.
+The direct reset link is not exposed in the browser by default in local mode
+because that would be unsafe on a shared operator machine.
 
-## Failure/Dependency Boundaries
+## Request/Response vs Realtime Flow
 
-### Browser-side issues affect:
+The system uses two communication styles because the information types are
+different.
 
-- rendering
-- operator controls
-- presentation
+### REST
 
-They do not replace the inference runtime.
+Use REST for:
 
-### Edge/runtime issues affect:
+- loading logs
+- changing gate mode
+- deciding a review
+- signing in
+- requesting password reset
 
-- camera access
-- recognition
-- PPE detection
-- Fleet monitoring
-- local persistence
+REST handles deliberate actions and stable record retrieval.
 
-These are the actual product-critical paths.
+### WebSocket
 
-## Required Runtime Inputs
+Use websocket for:
 
-To run correctly, the system needs:
+- live preview frames
+- gate state
+- driver state
+- event notifications
 
-- camera access
-- local `.env`
-- local SQLite DB path
-- PPE model file
-- InsightFace model files
-- Python dependencies
-- Node dependencies for the dashboard
+Websocket handles changing operational state.
 
-Without the models or local runtime, the UI can load but the system cannot
-perform its core safety functions.
+This split keeps the frontend simple to reason about:
+
+- ask for controlled data over REST
+- listen for live runtime state over websocket
+
+## Why The Runtime Is Designed This Way
+
+The project makes repeated design choices in favor of local control:
+
+- one camera owner instead of many
+- local inference instead of browser inference
+- local persistence instead of ephemeral live-only state
+- live websocket updates instead of repeated polling for fast-changing state
+
+Those choices make the system more suitable for industrial monitoring, where
+latency, clarity, and operator response matter more than pure cloud convenience.
