@@ -15,7 +15,7 @@ qrcode>=7.4.2
 sqlalchemy>=2.0.25
 
 # Chatbot (safety assistant)
-openai>=1.30.0
+groq>=0.31.0
 httpx>=0.27.0
 
 # AI/ML - Phase 1 (no build tools needed)

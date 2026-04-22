@@ -14,7 +14,7 @@ optional chatbot provider.
 - `Enrollment / Roster`: worker enrollment from photos or short video, roster
   import, and shift assignment.
 - `Alerts / Logs`: event history and site-wide live alerts.
-- `Safety Chatbot`: optional Groq-first assistant with OpenAI fallback.
+- `Safety Chatbot`: optional Groq-backed assistant with live site context.
 
 ## Current Runtime Model
 
@@ -139,7 +139,7 @@ Important variables from `.env.example`:
 - `PPE_MODEL`
 - `FACE_MODEL`
 - `FPS_LIMIT`
-- `GROQ_API_KEY` / `OPENAI_API_KEY`
+- `GROQ_API_KEY`
 - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_APPROVAL_SECRET`
 - `ADMIN_EMAIL`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `TOTP_ENCRYPTION_KEY`
 - `VITE_API_BASE_URL`, `VITE_WS_BASE_URL`

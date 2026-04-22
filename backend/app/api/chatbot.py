@@ -3,7 +3,7 @@ AI Safety Chatbot API.
 
 Thin wrapper over app.services.chatbot. The frontend hits three endpoints:
 
-  - GET  /api/chatbot/status   → whether the OpenAI key is configured
+  - GET  /api/chatbot/status   → whether Groq is configured
   - GET  /api/chatbot/context  → the live site snapshot (debug / preview)
   - POST /api/chatbot/message  → send a conversation, get a reply
 
@@ -51,7 +51,7 @@ class ChatResponse(BaseModel):
 
 class ChatStatusResponse(BaseModel):
     configured: bool
-    model: str
+    model: Optional[str] = None
     missing_key_hint: str
 
 

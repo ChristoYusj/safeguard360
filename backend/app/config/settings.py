@@ -42,13 +42,8 @@ class Settings(BaseSettings):
     ACTUATOR_TYPE: str = "stub"
     ARDUINO_PORT: str = ""
 
-    # AI Safety Chatbot (OpenAI). Leave OPENAI_API_KEY empty to disable —
-    # the endpoint will return a clear "not configured" error and the UI
-    # will show a banner explaining how to enable it.
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    # Groq is OpenAI-compatible; when GROQ_API_KEY is set the chatbot
-    # uses it in preference to OpenAI. Free tier, fast inference.
+    # AI Safety Chatbot. Groq is the only supported provider for the
+    # production chatbot path. Leave GROQ_API_KEY empty to disable it.
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     CHATBOT_MAX_HISTORY: int = 20

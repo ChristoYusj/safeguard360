@@ -1,8 +1,8 @@
 """
 AI Safety Chatbot service.
 
-Wraps OpenAI with a safety-scoped system prompt and injects a compact,
-live site-context summary into every conversation so the assistant can
+Wraps the Groq chat endpoint with a safety-scoped system prompt and injects a
+compact, live site-context summary into every conversation so the assistant can
 answer questions like:
 
   - "Who's on site right now?"
@@ -10,8 +10,8 @@ answer questions like:
   - "Show the last five driver events."
   - "Summarise this morning's gate activity."
 
-Keeps the operator's transcript lean (last N turns) and the OpenAI call
-isolated inside one function so we can swap providers later if needed.
+Keeps the operator's transcript lean (last N turns) and the Groq call isolated
+inside one function.
 """
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ def build_site_context(db: Session) -> SiteContext:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI call
+# Groq call
 # ---------------------------------------------------------------------------
 
 
@@ -277,29 +277,14 @@ class ChatbotError(Exception):
 
 
 def _resolve_provider() -> Optional[Dict[str, str]]:
-    """Pick the active LLM provider based on what's configured.
-
-    Preference order:
-      1. Groq (free tier, fastest, OpenAI-compatible) — if GROQ_API_KEY set.
-      2. OpenAI — if OPENAI_API_KEY set.
-      3. None — caller must treat as not configured.
-    """
+    """Pick the active chatbot provider based on what's configured."""
     settings = get_settings()
     groq_key = (settings.GROQ_API_KEY or "").strip()
     if groq_key:
         return {
             "name": "groq",
             "api_key": groq_key,
-            "base_url": "https://api.groq.com/openai/v1",
             "model": settings.GROQ_MODEL,
-        }
-    openai_key = (settings.OPENAI_API_KEY or "").strip()
-    if openai_key:
-        return {
-            "name": "openai",
-            "api_key": openai_key,
-            "base_url": None,
-            "model": settings.OPENAI_MODEL,
         }
     return None
 
@@ -312,9 +297,9 @@ def send_chat(
     messages: List[Dict[str, str]],
     db: Session,
 ) -> Dict[str, Any]:
-    """Send a conversation to OpenAI with live site context.
+    """Send a conversation to Groq with live site context.
 
-    `messages` is the operator's chat history in OpenAI format
+    `messages` is the operator's chat history in chat-completions format
     (role/content dicts). We trim it to the most recent CHATBOT_MAX_HISTORY
     entries, prepend our system prompt + site snapshot, and return the
     assistant's reply plus the context that was fed in (for debugging).
@@ -323,8 +308,8 @@ def send_chat(
     provider = _resolve_provider()
     if provider is None:
         raise ChatbotNotConfigured(
-            "No LLM provider is configured. Set GROQ_API_KEY (free tier) "
-            "or OPENAI_API_KEY in backend/.env to enable the assistant."
+            "Groq is not configured. Set GROQ_API_KEY in backend/.env "
+            "to enable the assistant."
         )
 
     # Build the on-demand site snapshot.
@@ -348,18 +333,15 @@ def send_chat(
     ]
 
     try:
-        from openai import OpenAI
+        from groq import Groq
     except ImportError as exc:
-        logger.exception("Chatbot: openai package not installed.")
+        logger.exception("Chatbot: groq package not installed.")
         raise ChatbotError(
-            "Missing dependency: install the 'openai' Python package."
+            "Missing dependency: install the 'groq' Python package."
         ) from exc
 
     try:
-        client_kwargs: Dict[str, Any] = {"api_key": provider["api_key"]}
-        if provider["base_url"]:
-            client_kwargs["base_url"] = provider["base_url"]
-        client = OpenAI(**client_kwargs)
+        client = Groq(api_key=provider["api_key"])
         response = client.chat.completions.create(
             model=provider["model"],
             messages=full_messages,
@@ -397,7 +379,6 @@ def status_payload() -> Dict[str, Any]:
         "provider": provider["name"] if provider else None,
         "model": provider["model"] if provider else None,
         "missing_key_hint": (
-            "Set GROQ_API_KEY (free tier) or OPENAI_API_KEY in backend/.env "
-            "to enable the assistant."
+            "Set GROQ_API_KEY in backend/.env to enable the assistant."
         ),
     }

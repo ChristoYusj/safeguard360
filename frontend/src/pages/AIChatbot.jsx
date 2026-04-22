@@ -117,7 +117,7 @@ function AIChatbot() {
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Poll /status on mount so the UI knows if the OpenAI key is set.
+  // Poll /status on mount so the UI knows if Groq is configured.
   useEffect(() => {
     let cancelled = false;
     getChatbotStatus()
@@ -165,7 +165,7 @@ function AIChatbot() {
       if (!isReady) {
         setError(
           status?.missing_key_hint ||
-            "OpenAI API key is not configured in backend/.env.",
+            "Groq is not configured in backend/.env.",
         );
         return;
       }
@@ -263,7 +263,7 @@ function AIChatbot() {
             </p>
             <p className="mt-1 text-sm text-secondary">
               {status.missing_key_hint ||
-                "Set OPENAI_API_KEY in backend/.env to enable chat."}
+                "Set GROQ_API_KEY in backend/.env to enable chat."}
             </p>
           </div>
         </div>
@@ -280,8 +280,8 @@ function AIChatbot() {
                 </h2>
                 <p className="mt-1 text-sm text-secondary">
                   {isReady
-                    ? `Powered by ${status?.model || "OpenAI"} · live site context injected each turn`
-                    : "Waiting for OpenAI credentials"}
+                    ? `Powered by ${status?.model || "Groq"} · live site context injected each turn`
+                    : "Waiting for Groq credentials"}
                 </p>
               </div>
             </div>
@@ -347,7 +347,7 @@ function AIChatbot() {
                 placeholder={
                   isReady
                     ? "Ask about the site, recent events, or safety procedures…"
-                    : "Configure OPENAI_API_KEY to enable chat"
+                    : "Configure GROQ_API_KEY to enable chat"
                 }
                 disabled={!isReady || isSending}
                 rows={2}
