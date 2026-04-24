@@ -116,6 +116,59 @@ describe("buildAttendanceSessionState", () => {
     });
   });
 
+  it("keeps approved PPE override check-ins visible when the worker has no assigned shift", () => {
+    const timestamp = "2026-04-22T23:10:00.000Z";
+    const { activeSessions, rosterCards } = buildAttendanceSessionState({
+      persons: [
+        {
+          id: "worker-no-shift",
+          name: "Christo",
+          employee_id: "EMP-360",
+          shift_id: null,
+          is_active: true,
+        },
+      ],
+      attendanceRecords: [
+        {
+          id: "attendance-no-shift",
+          person_id: "worker-no-shift",
+          person_name: "Christo",
+          person_employee_id: "EMP-360",
+          direction: "ENTRY",
+          timestamp,
+          access_granted: true,
+          ppe_compliant: false,
+          confidence: 0.9,
+          ppe_details: {
+            status: "non_compliant",
+            required_items: ["helmet", "vest"],
+            missing_items: ["vest"],
+            override_used: true,
+            override_reason_type: "ppe_non_compliance",
+          },
+          log_method: "MANUAL",
+        },
+      ],
+      gateReviews: [],
+    });
+
+    expect(activeSessions).toHaveLength(1);
+    expect(activeSessions[0]).toMatchObject({
+      personId: "worker-no-shift",
+      shiftId: null,
+    });
+    expect(rosterCards).toHaveLength(1);
+    expect(rosterCards[0]).toMatchObject({
+      personId: "worker-no-shift",
+      shiftId: null,
+    });
+    expect(rosterCards[0].registeredViolations).toHaveLength(1);
+    expect(rosterCards[0].registeredViolations[0]).toMatchObject({
+      id: "attendance:attendance-no-shift",
+      summary: "Missing vest",
+    });
+  });
+
   it("does not keep resolved denied reviews in the active roster when no cycle is open", () => {
     const { rosterCards, completedSessions } = buildAttendanceSessionState({
       persons: [

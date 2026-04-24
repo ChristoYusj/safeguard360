@@ -31,7 +31,7 @@ import {
   DEFAULT_DRIVER_PORTRAIT,
   readTestDatabase,
   writeTestDatabase,
-} from "../utils/testDatabase";
+} from "../utils/demoDatabase";
 
 const languageOptions = [
   { value: "en-US", label: "English (US)" },
@@ -1263,9 +1263,6 @@ function Settings() {
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="font-semibold text-primary">{t("worker_database")}</p>
-                    <p className="mt-1 text-sm text-secondary">
-                      {t("worker_database_description")}
-                    </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <input
@@ -1343,9 +1340,6 @@ function Settings() {
                   <div>
                     <p className="text-sm font-semibold text-primary">
                       Show inactive workers
-                    </p>
-                    <p className="mt-0.5 text-xs text-secondary">
-                      When off, workers marked inactive are hidden here and in Enrollment.
                     </p>
                   </div>
                   <ToggleSwitch
@@ -1681,9 +1675,6 @@ function Settings() {
                   <h2 className="mt-1 font-display text-xl font-semibold text-primary">
                     Access & Recovery
                   </h2>
-                  <p className="mt-1 text-sm text-secondary">
-                    Manage sign-in protection and credential recovery from one place.
-                  </p>
                 </div>
               </div>
             </div>

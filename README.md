@@ -197,10 +197,10 @@ safeguard360/
 |- backend/                  FastAPI app, inference, camera runtime, tests
 |- frontend/                 React operator dashboard
 |- data/                     SQLite DB and local model weights
+|  `- roster-demo.csv        sample roster import file
 |- docs/                     product, architecture, and presentation docs
 |- .env.example              environment template
 |- reset_admin_password.py   admin recovery utility
-`- roster-demo.csv           sample roster import file
 ```
 
 ## Why `data/models/` Looks Empty On GitHub
@@ -295,6 +295,16 @@ On the current demo machine, the PPE detector uses:
 
 - `data/models/ppe-hansung.pt`
 
+### Sample roster import
+
+Use `data/roster-demo.csv` as the sample worker import file. It contains the
+expected columns for the Settings worker import flow:
+
+- `name`
+- `employee_id`
+- `shift_id`
+- `is_active`
+
 ### Run backend
 
 ```powershell
@@ -338,6 +348,6 @@ npm test
 ## Notes
 
 - `reset_admin_password.py` is kept as the admin recovery tool
-- `roster-demo.csv` is the sample roster import file
+- `data/roster-demo.csv` is the sample roster import file
 - runtime outputs, caches, logs, models, and local env files are intentionally
   excluded from source control

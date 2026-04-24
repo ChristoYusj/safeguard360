@@ -50,7 +50,6 @@ from app.services.rbac import (
     derive_legacy_role,
     get_role_label,
     is_valid_self_service_role,
-    is_valid_user_role,
 )
 
 
@@ -1199,28 +1198,6 @@ def verify_operator_credentials(
     db.commit()
     clear_ip_failures(ip_address)
     db.refresh(user)
-    return user
-
-
-def authenticate_operator(
-    db: Session,
-    request: Request,
-    email: str,
-    password: str,
-) -> User:
-    user = verify_operator_credentials(
-        db=db,
-        request=request,
-        email=email,
-        password=password,
-    )
-
-    if user.two_factor_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Two-factor verification is required for this account.",
-        )
-
     return user
 
 

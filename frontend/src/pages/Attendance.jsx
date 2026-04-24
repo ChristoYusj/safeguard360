@@ -64,6 +64,7 @@ const SHIFT_BLOCKS = [
 ];
 
 const SHIFT_LATE_GRACE_MINUTES = 20;
+const FACE_AUTO_APPROVE_THRESHOLD = 0.85;
 
 const cardVariants = {
   hidden: { opacity: 0, y: 18 },
@@ -197,7 +198,6 @@ function formatReviewReasons(review) {
   const reviewReasons = Array.isArray(review?.review_reasons)
     ? review.review_reasons
     : [];
-  const ppe = normalizePpeDetails(review?.ppe_details);
   const labels = [];
 
   if (reviewReasons.includes("face_confidence")) {
@@ -206,11 +206,41 @@ function formatReviewReasons(review) {
   if (reviewReasons.includes("uncertain_ppe")) {
     labels.push("PPE status is uncertain");
   }
-  if (ppe.missing_items.length > 0) {
-    labels.push(`Missing ${ppe.missing_items.join(", ")}`);
+
+  return labels;
+}
+
+function getEffectivePendingReview(review, gateStatus) {
+  if (!gateStatus?.person_id || gateStatus.person_id !== review.person_id) {
+    return review;
   }
 
-  return labels.length > 0 ? labels : ["Operator review required"];
+  const confidence =
+    gateStatus.confidence != null
+      ? Math.max(review.confidence || 0, gateStatus.confidence)
+      : review.confidence;
+  let reviewReasons = Array.isArray(gateStatus.review_reasons)
+    ? gateStatus.review_reasons
+    : Array.isArray(review.review_reasons)
+      ? review.review_reasons
+      : [];
+
+  if (confidence != null && confidence >= FACE_AUTO_APPROVE_THRESHOLD) {
+    reviewReasons = reviewReasons.filter((reason) => reason !== "face_confidence");
+  }
+  const livePpeDetails = normalizePpeDetails(gateStatus.ppe_details);
+  const hasLivePpeSignal =
+    Boolean(gateStatus.ppe_details) &&
+    (livePpeDetails.status !== "not_evaluated" ||
+      livePpeDetails.required_items.length > 0 ||
+      livePpeDetails.missing_items.length > 0);
+
+  return {
+    ...review,
+    confidence,
+    review_reasons: reviewReasons,
+    ppe_details: hasLivePpeSignal ? gateStatus.ppe_details : review.ppe_details,
+  };
 }
 
 function ToggleSwitch({ checked, disabled = false, ariaLabel, onClick }) {
@@ -405,7 +435,11 @@ function getReviewShiftId(review, personsById) {
     ? personsById.get(review.person_id)?.shift_id || null
     : null;
 
-  return assignedShiftId || getShiftIdForTimestamp(review.timestamp || review.decided_at);
+  if (review.person_id) {
+    return assignedShiftId;
+  }
+
+  return getShiftIdForTimestamp(review.timestamp || review.decided_at);
 }
 
 function buildWorkerRecords(
@@ -422,10 +456,11 @@ function buildWorkerRecords(
   const personsById = new Map(persons.map((person) => [person.id, person]));
 
   gateReviews.forEach((review) => {
+    const reviewShiftId = getReviewShiftId(review, personsById);
     if (
       review.status !== "PENDING" ||
       !review.person_id ||
-      getReviewShiftId(review, personsById) !== selectedShiftWindow.shiftId
+      (reviewShiftId && reviewShiftId !== selectedShiftWindow.shiftId)
     ) {
       return;
     }
@@ -482,8 +517,13 @@ function buildWorkerRecords(
     const manualOverrideLabel = session.hasManualOverride
       ? ` Manual override used during ${session.manualOverrideDirections.join(" and ")}.`
       : "";
+    const reviewReasonLabels = effectivePendingReview
+      ? formatReviewReasons(effectivePendingReview)
+      : [];
     const note = effectivePendingReview
-      ? `${formatReviewReasons(effectivePendingReview).join(" • ")}. Waiting for operator approval.`
+      ? reviewReasonLabels.length > 0
+        ? `${reviewReasonLabels.join(" • ")}. Waiting for operator approval.`
+        : "Waiting for operator approval."
       : `Checked in for ${shiftLabel} at ${formatEventTime(lastEntryRecord?.timestamp)}.${manualOverrideLabel}`;
 
     return {
@@ -588,6 +628,7 @@ function Attendance() {
   const [streamSession, setStreamSession] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [isRecoveringFeed, setIsRecoveringFeed] = useState(false);
   const [isChangingRecognitionMode, setIsChangingRecognitionMode] = useState(false);
   const [isChangingGateDirection, setIsChangingGateDirection] = useState(false);
   const [isChangingPpePolicy, setIsChangingPpePolicy] = useState(false);
@@ -994,7 +1035,8 @@ function Attendance() {
   const personsById = new Map(personsData.map((person) => [person.id, person]));
   const scopedGateReviews = gateReviews.filter((review) =>
     review.status === "PENDING"
-      ? getReviewShiftId(review, personsById) === selectedShift.id
+      ? !getReviewShiftId(review, personsById) ||
+        getReviewShiftId(review, personsById) === selectedShift.id
       : isRecordInShiftWindow(
           { timestamp: review.timestamp || review.decided_at },
           selectedShiftWindow,
@@ -1021,19 +1063,7 @@ function Attendance() {
               gateStatus.match_status === "confirmed_match"
             ),
         )
-        .map((review) => {
-          if (
-            gateStatus?.person_id &&
-            gateStatus.person_id === review.person_id &&
-            gateStatus.confidence != null
-          ) {
-            return {
-              ...review,
-              confidence: Math.max(review.confidence || 0, gateStatus.confidence),
-            };
-          }
-          return review;
-        })
+        .map((review) => getEffectivePendingReview(review, gateStatus))
     : [];
   // Split reviews: known workers (low-confidence match) vs unrecognised faces
   const knownWorkerReviews = pendingReviews.filter((r) => r.person_id != null);
@@ -1117,13 +1147,13 @@ function Attendance() {
     !gateStatus?.person_id &&
     gateStatus?.match_status === "unknown_face";
   const recognitionStatusDetail = !cameraState?.active
-    ? "Start the live feed first, then enable recognition to begin check-in/check-out scanning."
+    ? null
     : !hasLiveFrame
       ? "Waiting for a stable live frame before recognition can be enabled."
       : !gateModeEnabled
         ? null
         : siteFullKnownWorkerDetected
-          ? "All registered workers are on site. Press Check-Out to begin checkout scanning."
+          ? "All registered workers on site."
           : siteFullUnknownDetected
             ? "Unknown face."
             : gateStatus?.message ||
@@ -1216,6 +1246,31 @@ function Attendance() {
   }, [cameraState?.active, hasLiveFrame, streamSession]);
 
   const refreshSources = async () => {
+    if (cameraState?.active) {
+      const activeSourceId =
+        cameraState.source_type && cameraState.source_type !== "none"
+          ? `${cameraState.source_type}:${cameraState.source_id || "0"}`
+          : selectedSourceId || "webcam:0";
+      const restoreMode = cameraState.mode === "gate" ? "gate" : null;
+
+      setError(null);
+      setIsRecoveringFeed(true);
+      try {
+        if (restoreMode === "gate") {
+          setGateStatus({
+            match_status: "starting",
+            message: "Recovering camera feed...",
+          });
+        }
+        await startStableFeed(activeSourceId, { restoreMode });
+      } catch (cameraError) {
+        setError(cameraError.message || "Failed to recover camera feed.");
+      } finally {
+        setIsRecoveringFeed(false);
+      }
+      return;
+    }
+
     try {
       const data = await getCameraSources();
       setSources(data || []);
@@ -1248,46 +1303,56 @@ function Attendance() {
       checkReady();
     });
 
+  const startStableFeed = async (sourceId, { restoreMode = null } = {}) => {
+    const parsed = parseSourceId(sourceId || "webcam:0");
+    let started = false;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
+      try {
+        setStreamSession((current) => current + 1);
+        resetLiveMetrics();
+
+        const state = await startCamera(
+          parsed.type,
+          parsed.id,
+          cameraOwnerRef.current,
+        );
+        applyCameraState(state);
+        if (state?.source_type && state?.source_id != null) {
+          setSelectedSourceId(`${state.source_type}:${state.source_id}`);
+        }
+
+        await waitForLiveFrame(3600);
+
+        if (restoreMode && restoreMode !== "idle") {
+          const restoredState = await setCameraMode(restoreMode, cameraOwnerRef.current);
+          applyCameraState(restoredState);
+        }
+
+        started = true;
+      } catch (cameraError) {
+        lastError = cameraError;
+        try {
+          await stopCamera(cameraOwnerRef.current);
+        } catch {
+          // Ignore cleanup errors between startup retries.
+        }
+      }
+    }
+
+    if (!started) {
+      throw lastError || new Error("Failed to start a stable live feed.");
+    }
+  };
+
   const handleStart = async () => {
     const fallbackSourceId = selectedSourceId || "webcam:0";
-    const parsed = parseSourceId(fallbackSourceId);
 
     setError(null);
     setIsStarting(true);
     try {
-      let started = false;
-      let lastError = null;
-
-      for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
-        try {
-          setStreamSession((current) => current + 1);
-          resetLiveMetrics();
-
-          const state = await startCamera(
-            parsed.type,
-            parsed.id,
-            cameraOwnerRef.current,
-          );
-          applyCameraState(state);
-          if (state?.source_type && state?.source_id != null) {
-            setSelectedSourceId(`${state.source_type}:${state.source_id}`);
-          }
-
-          await waitForLiveFrame(3600);
-          started = true;
-        } catch (cameraError) {
-          lastError = cameraError;
-          try {
-            await stopCamera(cameraOwnerRef.current);
-          } catch {
-            // Ignore cleanup errors between startup retries.
-          }
-        }
-      }
-
-      if (!started) {
-        throw lastError || new Error("Failed to start a stable live feed.");
-      }
+      await startStableFeed(fallbackSourceId);
     } catch (cameraError) {
       setError(cameraError.message || "Failed to start gate camera.");
     } finally {
@@ -1391,10 +1456,25 @@ function Attendance() {
             : review,
         ),
       );
-      await decideAttendanceReview(reviewId, {
+      const decidedReview = await decideAttendanceReview(reviewId, {
         decision,
         decided_by: user?.email || "Authorized operator",
       });
+      setGateReviews((current) =>
+        current.map((review) => (review.id === reviewId ? decidedReview : review)),
+      );
+      try {
+        const [persons, records, reviews] = await Promise.all([
+          getPersons(),
+          getAttendance({ limit: 500 }),
+          getAttendanceReviews("all", { limit: 500 }),
+        ]);
+        setPersonsData(persons || []);
+        setAttendanceRecords(records || []);
+        setGateReviews(reviews || []);
+      } catch (refreshError) {
+        console.error("[Attendance] Failed to refresh after review decision", refreshError);
+      }
       setAttendanceRefreshTick((current) => current + 1);
     } catch (decisionError) {
       setAttendanceRefreshTick((current) => current + 1);
@@ -1679,11 +1759,11 @@ function Attendance() {
                         {cameraState?.active ? (
                           <p className="text-sm text-secondary">
                             {checkoutModeLocked
-                              ? "Check-Out is locked because all registered workers are on site."
+                              ? "Check-In is locked because all registered workers are on site."
                               : checkInModeLocked
-                                ? "Check-In is locked because nobody is currently on site."
+                                ? "Check-Out is locked because nobody is currently on site."
                               : allRegisteredWorkersOnSite && gateDirectionMode === "ENTRY"
-                                ? "All registered workers are on site. Press Check-Out manually to begin checkout scanning."
+                                ? "All registered workers on site."
                                 : "Switch between Check-In and Check-Out without stopping the camera."}
                           </p>
                         ) : null}
@@ -1706,7 +1786,7 @@ function Attendance() {
                         <button
                           type="button"
                           onClick={handleStart}
-                          disabled={cameraState?.active || isStarting}
+                          disabled={cameraState?.active || isStarting || isRecoveringFeed}
                           className="btn btn-primary h-12 px-4"
                         >
                           {isStarting ? "Starting..." : "Start Feed"}
@@ -1723,10 +1803,15 @@ function Attendance() {
                         <button
                           type="button"
                           onClick={refreshSources}
-                          className="btn btn-secondary h-12 px-4 xl:col-span-2"
+                          disabled={isStarting || isRecoveringFeed}
+                          className="btn btn-secondary h-12 px-4 disabled:opacity-50 xl:col-span-2"
                         >
                           <RefreshIcon size={16} />
-                          Refresh Sources
+                          {cameraState?.active
+                            ? isRecoveringFeed
+                              ? "Recovering Feed..."
+                              : "Recover Feed"
+                            : "Refresh Sources"}
                         </button>
                       </div>
                     </div>
@@ -1788,9 +1873,6 @@ function Attendance() {
                       <h3 className="text-base font-semibold text-primary">
                         Review Queue
                       </h3>
-                      <p className="text-sm text-secondary">
-                        Known workers that need operator approval
-                      </p>
                     </div>
                   </div>
                   <span className="badge badge-warning">{knownWorkerReviews.length} active</span>
@@ -1844,9 +1926,6 @@ function Attendance() {
                                   </span>
                                 ) : null}
                               </div>
-                              <p className="mt-3 text-sm font-medium text-primary">
-                                Approve to log attendance with operator authorization, or deny to keep this worker outside the gate.
-                              </p>
                               {normalizePpeDetails(review.ppe_details).missing_items.length > 0 ? (
                                 <p className="mt-2 text-sm text-secondary">
                                   Missing PPE: {normalizePpeDetails(review.ppe_details).missing_items.join(", ")}

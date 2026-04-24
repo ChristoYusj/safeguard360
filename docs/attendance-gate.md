@@ -19,9 +19,9 @@ cannot move the system into an impossible state.
 
 ### Boundary behavior
 
-- if `all registered workers are on site`, `Check-Out` is the locked boundary
+- if `all registered workers are on site`, `Check-In` is the locked boundary
   state
-- if `nobody is on site`, `Check-In` is the locked boundary state
+- if `nobody is on site`, `Check-Out` is the locked boundary state
 - if the site is in a partial state, the operator may switch manually
 
 This keeps the workflow controlled while still preventing obviously incorrect
@@ -159,3 +159,14 @@ This is intentional:
 
 That separation keeps the live gate page readable and keeps history in the
 correct place.
+
+## Feed Recovery
+
+The camera source button has two behaviors:
+
+- when the feed is stopped, `Refresh Sources` re-scans available camera sources
+- when the feed is active, `Recover Feed` reopens the current camera and
+  reconnects the live stream
+
+If recognition mode was active before recovery, the UI restores it after the
+camera starts sending stable frames again.

@@ -17,7 +17,7 @@ import {
 import {
   readTestDatabase,
   TEST_DATABASE_UPDATED_EVENT,
-} from "../utils/testDatabase";
+} from "../utils/demoDatabase";
 
 const SHIFT_OPTIONS = [
   { id: "day", label: "Day Shift" },
@@ -338,11 +338,6 @@ function Enrollment() {
                     {recognizerStatus?.available
                       ? "ArcFace embeddings active"
                       : "Enrollment storage active"}
-                  </p>
-                  <p className="mt-2 text-sm text-secondary">
-                    {recognizerStatus?.available
-                      ? "Recognition runtime is ready."
-                      : recognizerStatus?.message || "Loading recognition runtime status."}
                   </p>
                 </div>
                 <span

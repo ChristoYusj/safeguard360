@@ -49,23 +49,20 @@ const translations = {
     platform_configuration: "Platform Configuration",
     workspace_controls: "Workspace Controls",
     theme_preference: "Theme Preference",
-    theme_preference_description:
-      "Switch between light and dark command center themes.",
+    theme_preference_description: "",
     dark_command_center: "Dark command center",
     light_command_center: "Light command center",
     language: "Language",
-    language_description: "Set the default language for operator-facing UI text.",
+    language_description: "",
     camera: "Camera",
     fleet_camera_description:
       "Choose the default camera source that fleet monitoring should preselect.",
     attendance_camera_description:
       "Choose the default video source for attendance and PPE scans.",
     driver_database: "Driver Database",
-    driver_database_description:
-      "Add the drivers that fleet monitoring should recognize in local tests.",
+    driver_database_description: "",
     worker_database: "Worker Database",
-    worker_database_description:
-      "Add the workers that attendance and PPE recognition will use in tests.",
+    worker_database_description: "",
     add_driver: "+ Add Driver",
     add_worker: "+ Add Worker",
     driver_name_placeholder: "Driver name",
@@ -139,11 +136,9 @@ const translations = {
     attendance_camera_description:
       "اختر مصدر الفيديو الافتراضي للحضور وفحص معدات الوقاية.",
     driver_database: "قاعدة بيانات السائقين",
-    driver_database_description:
-      "أضف السائقين الذين يجب أن تتعرف عليهم مراقبة الأسطول في الاختبارات المحلية.",
+    driver_database_description: "",
     worker_database: "قاعدة بيانات العمال",
-    worker_database_description:
-      "أضف العمال الذين سيستخدمهم نظام الحضور ومعدات الوقاية في الاختبارات.",
+    worker_database_description: "",
     add_driver: "+ إضافة سائق",
     add_worker: "+ إضافة عامل",
     driver_name_placeholder: "اسم السائق",

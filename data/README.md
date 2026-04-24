@@ -15,6 +15,8 @@ This directory is intentionally different from normal source-code folders:
   local model files used by PPE detection and face recognition
 - `safeguard360.db`
   the local SQLite database used by the running system
+- `roster-demo.csv`
+  sample worker roster used by the Settings import flow
 
 ## Why GitHub does not show the real model files
 

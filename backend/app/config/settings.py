@@ -22,25 +22,13 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
 
     # Camera
-    DEFAULT_CAMERA: str = "webcam"
     CAMERA_RESOLUTION: str = "640,480"
     FPS_LIMIT: int = 30
-
-    # Thresholds
-    FACE_MATCH_THRESHOLD: float = 0.6
-    FATIGUE_EAR_THRESHOLD: float = 0.25
-    FATIGUE_CONSECUTIVE_FRAMES: int = 15
-    DISTRACTION_HEAD_ANGLE: float = 30.0
-    SEATBELT_REQUIRED: bool = True
 
     # Models
     MODELS_DIR: str = "./data/models"
     PPE_MODEL: str = "yolo11n.pt"
     FACE_MODEL: str = "buffalo_l"
-
-    # Actuator
-    ACTUATOR_TYPE: str = "stub"
-    ARDUINO_PORT: str = ""
 
     # AI Safety Chatbot. Groq is the only supported provider for the
     # production chatbot path. Leave GROQ_API_KEY empty to disable it.
@@ -78,7 +66,6 @@ class Settings(BaseSettings):
     # Bootstrap operator
     BOOTSTRAP_ADMIN_NAME: str = "System Administrator"
     BOOTSTRAP_ADMIN_PASSWORD: str = ""
-    BOOTSTRAP_ADMIN_ROLE: str = "Platform Manager"
 
     @property
     def camera_resolution_tuple(self) -> Tuple[int, int]:

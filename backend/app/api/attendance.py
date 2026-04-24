@@ -175,11 +175,13 @@ def _create_attendance_record(
     camera_source_type: Optional[str] = None,
     camera_source_id: Optional[str] = None,
     log_method: Optional[str] = None,
+    timestamp: Optional[datetime] = None,
 ) -> Attendance:
     record = Attendance(
         person_id=person.id if person else None,
         person_name=person_name,
         direction=direction,
+        timestamp=timestamp or datetime.now(),
         ppe_compliant=ppe_compliant,
         access_granted=access_granted,
         confidence=confidence,
@@ -239,7 +241,6 @@ def _is_ppe_compliant_after_review(review_reasons: List[str], ppe_details: Dict[
     return ppe_details.get("status") in {
         "compliant",
         "skipped",
-        "unavailable",
         "not_evaluated",
     }
 
@@ -410,7 +411,7 @@ def decide_gate_review(
         )
 
     review.status = payload.decision
-    review.decided_at = datetime.utcnow()
+    review.decided_at = datetime.now()
     review.decided_by = payload.decided_by.strip() if payload.decided_by else "Authorized operator"
     review.decision_note = payload.note.strip() if payload.note else None
     review_reasons = normalize_review_reasons(review.review_reasons)
@@ -450,6 +451,7 @@ def decide_gate_review(
             camera_source_type=camera_source["camera_source_type"],
             camera_source_id=camera_source["camera_source_id"],
             log_method="MANUAL",
+            timestamp=review.decided_at,
         )
         if override_reason_type in {"ppe_non_compliance", "combined"}:
             create_event_record(

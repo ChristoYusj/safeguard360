@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy.orm import Session
 
+from app.api._admin_helpers import get_admin_user
 from app.db.connection import get_db
 from app.db.models import User
 from app.services.auth import serialize_user
@@ -80,21 +81,9 @@ def _serialize_admin_user(user: User) -> dict:
     return payload
 
 
-def _get_admin_user(request: Request, db: Session) -> User:
-    current_user = getattr(request.state, "user", None)
-    if not isinstance(current_user, User):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
-    admin_user = db.query(User).filter(User.id == current_user.id).first()
-    if not admin_user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
-    if admin_user.role != ADMIN_ROLE:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden.")
-    return admin_user
-
-
 @router.get("/users")
 def list_users(request: Request, db: Session = Depends(get_db)):
-    _get_admin_user(request, db)
+    get_admin_user(request, db)
     users = db.query(User).order_by(User.created_at.asc(), User.email.asc()).all()
     return {
         "users": [_serialize_admin_user(user) for user in users],
@@ -108,7 +97,7 @@ def update_user_account(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    admin_user = _get_admin_user(request, db)
+    admin_user = get_admin_user(request, db)
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
@@ -183,7 +172,7 @@ def delete_user_account(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    admin_user = _get_admin_user(request, db)
+    admin_user = get_admin_user(request, db)
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
@@ -208,7 +197,7 @@ def unlock_user_account(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    admin_user = _get_admin_user(request, db)
+    admin_user = get_admin_user(request, db)
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")

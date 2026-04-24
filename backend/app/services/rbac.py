@@ -43,11 +43,6 @@ ROLE_LABELS = {
     GENERAL_MANAGER_ROLE: "General Manager",
 }
 
-ACTIVE_AUTH_STATUSES = {
-    USER_STATUS_ACTIVE,
-}
-
-
 def normalize_user_role(role: str | None) -> str | None:
     normalized = (role or "").strip().lower()
     return normalized or None
@@ -58,16 +53,8 @@ def normalize_user_status(status: str | None) -> str | None:
     return normalized or None
 
 
-def is_valid_user_role(role: str | None) -> bool:
-    return normalize_user_role(role) in ALL_USER_ROLES
-
-
 def is_valid_self_service_role(role: str | None) -> bool:
     return normalize_user_role(role) in SELF_SERVICE_REGISTRATION_ROLES
-
-
-def is_valid_user_status(status: str | None) -> bool:
-    return normalize_user_status(status) in ALL_USER_STATUSES
 
 
 def get_role_label(role: str | None) -> str:

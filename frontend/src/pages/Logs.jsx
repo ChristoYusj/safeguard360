@@ -157,6 +157,9 @@ function Logs() {
   const [persons, setPersons] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [gateReviews, setGateReviews] = useState([]);
+  const [fleetBusy, setFleetBusy] = useState(false);
+  const [fleetMessage, setFleetMessage] = useState("");
+  const [fleetError, setFleetError] = useState("");
   const [attendanceBusy, setAttendanceBusy] = useState(false);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
@@ -238,9 +241,29 @@ function Logs() {
       : null,
   ].filter(Boolean);
 
-  const handleClearModule = (moduleName) => {
-    clearPlatformLogModule(moduleName);
-    setStore(readPlatformLogs());
+  const handleClearFleetLogs = () => {
+    const confirmed = window.confirm(
+      "Clear all fleet logs and driver monitoring history?",
+    );
+    if (!confirmed || fleetBusy) {
+      return;
+    }
+
+    setFleetBusy(true);
+    setFleetError("");
+    setFleetMessage("");
+    try {
+      const removedCount = fleetSessions.length;
+      clearPlatformLogModule("fleet");
+      setStore(readPlatformLogs());
+      setFleetMessage(
+        `Fleet history cleared. ${removedCount} fleet session${removedCount === 1 ? "" : "s"} removed.`,
+      );
+    } catch (error) {
+      setFleetError(error.message || "Fleet logs could not be cleared.");
+    } finally {
+      setFleetBusy(false);
+    }
   };
 
   const handleClearAttendanceLogs = async () => {
@@ -335,6 +358,20 @@ function Logs() {
           transition={{ delay: 0.2 }}
           className="space-y-4"
         >
+          {fleetMessage ? (
+            <div className="rounded-xl border border-[var(--color-success)] bg-[var(--color-success-muted)] px-4 py-3">
+              <p className="text-sm font-semibold" style={{ color: "var(--color-success)" }}>
+                {fleetMessage}
+              </p>
+            </div>
+          ) : null}
+          {fleetError ? (
+            <div className="rounded-xl border border-[var(--color-error)] bg-[var(--color-error-muted)] px-4 py-3">
+              <p className="text-sm font-semibold" style={{ color: "var(--color-error)" }}>
+                {fleetError}
+              </p>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between">
             <h2 className="font-display text-xl font-semibold text-primary">
               Fleet Sessions
@@ -343,10 +380,11 @@ function Logs() {
               <span className="text-sm text-secondary">Driver history</span>
               <button
                 type="button"
-                onClick={() => handleClearModule("fleet")}
+                onClick={handleClearFleetLogs}
+                disabled={fleetBusy}
                 className="btn btn-secondary h-10 px-4"
               >
-                Clear
+                {fleetBusy ? "Clearing..." : "Clear"}
               </button>
             </div>
           </div>
@@ -416,10 +454,6 @@ function Logs() {
                   <DriversIcon className="h-6 w-6 text-[var(--color-info)]" />
                 </div>
                 <p className="font-medium text-primary">No Fleet Sessions</p>
-                <p className="mt-1 text-sm text-secondary">
-                  Start a driver session and warnings will be archived here
-                  automatically.
-                </p>
               </div>
             </div>
           )}
@@ -543,9 +577,6 @@ function Logs() {
                   <AttendanceIcon className="h-6 w-6 text-[var(--color-success)]" />
                 </div>
                 <p className="font-medium text-primary">No Completed Sessions</p>
-                <p className="mt-1 text-sm text-secondary">
-                  Worker sessions appear here after both check-in and check-out are logged.
-                </p>
               </div>
             </div>
           )}

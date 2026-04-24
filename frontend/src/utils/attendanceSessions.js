@@ -230,7 +230,13 @@ function findMatchingApprovedReview(record, approvedReviews, usedReviewIds) {
 
 function createSessionShell(record, personsById) {
   const person = record.person_id ? personsById.get(record.person_id) : null;
-  const resolvedShiftId = person?.shift_id || getShiftIdForTimestamp(record.timestamp);
+  // If the worker has no explicit shift on file, leave the session shift-less
+  // (null) so it stays visible regardless of which shift the operator has
+  // selected. Falling back to a timestamp-derived shift would hide manual
+  // approvals made outside the selected shift's hours, which in turn locks the
+  // Check-Out button because onSiteCount stays at 0.
+  const resolvedShiftId =
+    person?.shift_id || (record.person_id ? null : getShiftIdForTimestamp(record.timestamp));
 
   return {
     id: `session-${record.id}`,
@@ -252,7 +258,8 @@ function createSessionShell(record, personsById) {
 
 function buildRosterEvent(record, personsById, matchedReview) {
   const person = record.person_id ? personsById.get(record.person_id) : null;
-  const resolvedShiftId = person?.shift_id || getShiftIdForTimestamp(record.timestamp);
+  const resolvedShiftId =
+    person?.shift_id || (record.person_id ? null : getShiftIdForTimestamp(record.timestamp));
 
   return {
     id: record.id,
@@ -285,8 +292,7 @@ function buildRosterViolationFromReview(review, personsById) {
   }
 
   const person = personsById.get(review.person_id) || null;
-  const resolvedShiftId =
-    person?.shift_id || getShiftIdForTimestamp(review.decided_at || review.timestamp);
+  const resolvedShiftId = person?.shift_id || null;
   const decision = review.status === "DENIED" ? "Entry denied" : "Override granted";
 
   return {
@@ -324,7 +330,7 @@ function buildRosterViolationFromRecord(record, personsById, matchedReview = nul
   }
 
   const person = personsById.get(record.person_id) || null;
-  const resolvedShiftId = person?.shift_id || getShiftIdForTimestamp(record.timestamp);
+  const resolvedShiftId = person?.shift_id || null;
 
   return {
     id: `attendance:${record.id}`,
@@ -504,7 +510,8 @@ export function buildAttendanceSessionState({
         personName: record.person_name || "Unknown worker",
         employeeId: record.person_employee_id || null,
         shiftId:
-          personsById.get(record.person_id)?.shift_id || getShiftIdForTimestamp(record.timestamp),
+          personsById.get(record.person_id)?.shift_id ||
+          (record.person_id ? null : getShiftIdForTimestamp(record.timestamp)),
       },
     );
   });
@@ -526,7 +533,9 @@ export function buildAttendanceSessionState({
           employeeId: review.person_employee_id || null,
           shiftId:
             personsById.get(review.person_id)?.shift_id ||
-            getShiftIdForTimestamp(review.decided_at || review.timestamp),
+            (review.person_id
+              ? null
+              : getShiftIdForTimestamp(review.decided_at || review.timestamp)),
         },
       );
     });

@@ -59,7 +59,7 @@ const DEFAULT_DRIVER_RECORDS = [
   },
 ];
 
-const DEFAULT_TEST_DATABASE = {
+const DEFAULT_DEMO_DATABASE = {
   schemaVersion: 3,
   drivers: DEFAULT_DRIVER_RECORDS,
   attendanceWorkers: [],
@@ -139,7 +139,7 @@ function normalizeAttendanceWorker(worker, index) {
   };
 }
 
-function normalizeTestDatabase(database = {}) {
+function normalizeDemoDatabase(database = {}) {
   const shouldSeedLegacyDrivers =
     database.schemaVersion == null &&
     Array.isArray(database.drivers) &&
@@ -168,19 +168,19 @@ function normalizeTestDatabase(database = {}) {
 
 export function readTestDatabase() {
   if (typeof window === "undefined") {
-    return normalizeTestDatabase(DEFAULT_TEST_DATABASE);
+    return normalizeDemoDatabase(DEFAULT_DEMO_DATABASE);
   }
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return normalizeTestDatabase(DEFAULT_TEST_DATABASE);
+      return normalizeDemoDatabase(DEFAULT_DEMO_DATABASE);
     }
 
-    return normalizeTestDatabase(JSON.parse(raw));
+    return normalizeDemoDatabase(JSON.parse(raw));
   } catch (error) {
-    console.error("[testDatabase] Failed to read storage", error);
-    return normalizeTestDatabase(DEFAULT_TEST_DATABASE);
+    console.error("[demoDatabase] Failed to read storage", error);
+    return normalizeDemoDatabase(DEFAULT_DEMO_DATABASE);
   }
 }
 
@@ -190,13 +190,13 @@ export function writeTestDatabase(database) {
   }
 
   try {
-    const normalizedDatabase = normalizeTestDatabase(database);
+    const normalizedDatabase = normalizeDemoDatabase(database);
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify(normalizedDatabase),
     );
     window.dispatchEvent(new Event(TEST_DATABASE_UPDATED_EVENT));
   } catch (error) {
-    console.error("[testDatabase] Failed to write storage", error);
+    console.error("[demoDatabase] Failed to write storage", error);
   }
 }

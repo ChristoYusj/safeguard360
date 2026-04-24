@@ -306,6 +306,14 @@ class GateAttendanceRecognizer:
         finally:
             db.close()
 
+    def _are_all_enrolled_workers_on_site(self, enrolled_people, on_site_ids: set[str]) -> bool:
+        enrolled_ids = {
+            person.id
+            for person, _vectors in enrolled_people
+            if getattr(person, "id", None)
+        }
+        return bool(enrolled_ids) and enrolled_ids.issubset(on_site_ids)
+
     def _get_gate_policy(self) -> GatePolicy:
         now_ts = time.time()
         if (
@@ -526,7 +534,10 @@ class GateAttendanceRecognizer:
     ) -> bool:
         if direction != "ENTRY" or not policy.deny_non_compliant_entry:
             return False
-        return ppe_details.get("status") in {"non_compliant", "uncertain"}
+        # Block on non-compliant, uncertain, OR unavailable — if enforce mode is
+        # active the detector must be able to confirm compliance; an unavailable
+        # detector is not a free pass.
+        return ppe_details.get("status") in {"non_compliant", "uncertain", "unavailable"}
 
     def _log_unknown_face_attempt(
         self,
@@ -814,11 +825,20 @@ class GateAttendanceRecognizer:
                 .first()
             )
             if existing_review:
-                existing_review.confidence = max(existing_review.confidence or 0.0, confidence)
-                existing_review.review_reasons = serialize_review_reasons(review_reasons)
-                existing_review.ppe_details = serialize_ppe_details(ppe_details)
-                db.commit()
-                db.refresh(existing_review)
+                next_confidence = max(existing_review.confidence or 0.0, confidence)
+                next_review_reasons = normalize_review_reasons(review_reasons)
+                next_ppe_details = normalize_ppe_details(ppe_details)
+                should_update = (
+                    next_confidence != (existing_review.confidence or 0.0)
+                    or normalize_review_reasons(existing_review.review_reasons) != next_review_reasons
+                    or normalize_ppe_details(existing_review.ppe_details) != next_ppe_details
+                )
+                if should_update:
+                    existing_review.confidence = next_confidence
+                    existing_review.review_reasons = serialize_review_reasons(next_review_reasons)
+                    existing_review.ppe_details = serialize_ppe_details(next_ppe_details)
+                    db.commit()
+                    db.refresh(existing_review)
                 return existing_review, False
 
             review = GateReview(
@@ -1542,6 +1562,65 @@ class GateAttendanceRecognizer:
 
         self.unknown_face_streak = 0
         self.last_match_state_seen_at = now_ts
+        entry_on_site_ids: set[str] = set()
+        all_enrolled_on_site = False
+        if self.gate_direction_mode == "ENTRY":
+            entry_on_site_ids = self._get_on_site_person_ids(now_dt)
+            all_enrolled_on_site = self._are_all_enrolled_workers_on_site(
+                enrolled_people,
+                entry_on_site_ids,
+            )
+            if all_enrolled_on_site:
+                label = "All workers on site"
+                self.gate_state = self._build_gate_state(
+                    match_status="already_checked_in",
+                    person_id=person.id,
+                    person_name=person.name,
+                    confidence=score,
+                    last_seen_at=now_ts,
+                    faces_detected=faces_detected,
+                    message="All workers on site.",
+                    bbox=best_face["bbox"],
+                    overlay_label=label,
+                    overlay_tone="info",
+                    candidate_scope=candidate_scope,
+                    ppe_details=self._get_live_ppe_details(now_ts, person_id=person.id),
+                )
+                self._set_overlay(
+                    best_face["bbox"],
+                    label,
+                    (59, 130, 246),
+                    now_ts,
+                    hold_seconds=self.overlay_hold_seconds,
+                )
+                self._draw_match_box(frame, best_face["bbox"], label, (59, 130, 246))
+                return frame, events
+            if person.id in entry_on_site_ids:
+                label = f"{person.name} checked in"
+                self.gate_state = self._build_gate_state(
+                    match_status="already_checked_in",
+                    person_id=person.id,
+                    person_name=person.name,
+                    confidence=score,
+                    last_seen_at=now_ts,
+                    faces_detected=faces_detected,
+                    message=f"{person.name} checked in.",
+                    bbox=best_face["bbox"],
+                    overlay_label=label,
+                    overlay_tone="info",
+                    candidate_scope=candidate_scope,
+                    ppe_details=self._get_live_ppe_details(now_ts, person_id=person.id),
+                )
+                self._set_overlay(
+                    best_face["bbox"],
+                    label,
+                    (59, 130, 246),
+                    now_ts,
+                    hold_seconds=self.overlay_hold_seconds,
+                )
+                self._draw_match_box(frame, best_face["bbox"], label, (59, 130, 246))
+                return frame, events
+
         if self.last_candidate_person_id == person.id:
             self.last_candidate_streak += 1
         else:
@@ -1716,6 +1795,17 @@ class GateAttendanceRecognizer:
                 self.active_match_last_seen_at = now_ts
                 return frame, events
             if needs_review and self.active_review_person_id == person.id:
+                if direction is not None:
+                    review, _ = self._create_or_get_pending_review(
+                        person=person,
+                        direction=direction,
+                        confidence=score,
+                        timestamp=now_dt,
+                        frame=frame,
+                        review_reasons=review_reasons,
+                        ppe_details=ppe_details,
+                    )
+                    self.active_review_id = review.id
                 self.active_review_last_seen_at = now_ts
                 self.gate_state["message"] = (
                     f"{person.name} is waiting for operator review. "
@@ -1790,7 +1880,6 @@ class GateAttendanceRecognizer:
             ppe_compliant = ppe_details.get("status") in {
                 "compliant",
                 "skipped",
-                "unavailable",
                 "not_evaluated",
             }
             self._log_attendance(

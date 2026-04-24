@@ -235,11 +235,6 @@ function AIChatbot() {
         <h1 className="font-display text-3xl font-bold text-primary md:text-4xl">
           AI Safety Assistant
         </h1>
-        <p className="mt-3 max-w-3xl text-sm text-secondary">
-          Ask about current site state, recent incidents, or general
-          industrial safety guidance. The assistant is scoped to SafeGuard 360
-          data and reads a fresh site snapshot on every turn.
-        </p>
       </motion.header>
 
       {status && !status.configured ? (

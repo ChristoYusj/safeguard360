@@ -485,14 +485,4 @@ class DriverDetector:
             "mediapipe_available": bool(MEDIAPIPE_AVAILABLE),
             "detector_ready": bool(self.face_landmarker is not None),
             "status_message": self._get_detector_status_message(),
-            "debug": {
-                "detect_ms_last": self.last_detect_ms,
-                "detect_ms_avg": self.avg_detect_ms,
-                "process_ms_last": self.last_process_ms,
-                "process_ms_avg": self.avg_process_ms,
-                "frames_with_face": int(self.frames_with_face),
-                "frames_without_face": int(self.frames_without_face),
-                "detection_max_width": int(self.detection_max_width),
-                "init_error": self.init_error,
-            },
         }

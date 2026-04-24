@@ -24,7 +24,7 @@ import { readAppSettings } from "../utils/appSettings";
 import {
   readTestDatabase,
   TEST_DATABASE_UPDATED_EVENT,
-} from "../utils/testDatabase";
+} from "../utils/demoDatabase";
 import {
   VideoIcon,
   AlertTriangleIcon,
@@ -1122,7 +1122,7 @@ function Dashboard() {
                     {selectedDriver.stateId}
                   </p>
                   <span className="mt-3 inline-flex rounded-full bg-[var(--color-success-muted)] px-3 py-1 text-xs font-semibold text-[var(--color-success)]">
-                    {selectedDriver.licenseClass}
+                    {selectedDriver.stateId}
                   </span>
                 </div>
               </div>
