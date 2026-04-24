@@ -3,11 +3,14 @@ Authentication routes.
 """
 from __future__ import annotations
 
+from html import escape
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy.orm import Session
 
+from app.config.settings import get_settings
 from app.db.connection import get_db
 from app.db.models import User
 from app.services.auth import (
@@ -47,6 +50,237 @@ from app.services.rbac import (
 
 
 router = APIRouter()
+
+
+def _build_approval_result_html(
+    *,
+    user: User,
+    message: str,
+    approved: bool,
+) -> str:
+    settings = get_settings()
+    frontend_url = (settings.FRONTEND_APP_URL or "").strip().rstrip("/")
+    sign_in_url = f"{frontend_url}/" if frontend_url else "/"
+    title = "Approval processed" if approved else "Rejection processed"
+    eyebrow = "Operator Access"
+    status_label = "Approved" if approved else "Rejected"
+    headline = "Account approved" if approved else "Request rejected"
+    helper = (
+        "The operator can now return to SafeGuard 360 and sign in."
+        if approved
+        else "The operator will not be able to sign in with this request."
+    )
+    tone = "#22c55e" if approved else "#ef4444"
+    tone_muted = "rgba(34, 197, 94, 0.14)" if approved else "rgba(239, 68, 68, 0.14)"
+    icon_path = (
+        '<path d="M20 7L10 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />'
+        if approved
+        else '<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />'
+    )
+    safe_name = escape(user.full_name or "Operator")
+    safe_email = escape(user.email or "")
+    safe_message = escape(message)
+    safe_sign_in_url = escape(sign_in_url, quote=True)
+
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{escape(title)} - SafeGuard 360</title>
+    <style>
+      :root {{
+        color-scheme: dark;
+        --bg: #071014;
+        --panel: rgba(18, 29, 42, 0.92);
+        --panel-strong: rgba(23, 37, 53, 0.96);
+        --border: rgba(148, 163, 184, 0.22);
+        --text: #f8fafc;
+        --muted: #9ca3af;
+        --soft: #cbd5e1;
+        --accent: #22d3ee;
+        --tone: {tone};
+        --tone-muted: {tone_muted};
+      }}
+      * {{
+        box-sizing: border-box;
+      }}
+      body {{
+        min-height: 100vh;
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+          linear-gradient(135deg, #071014 0%, #0b1620 48%, #101827 100%);
+        background-size: 44px 44px, 44px 44px, auto;
+      }}
+      main {{
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px 18px;
+      }}
+      .card {{
+        width: min(560px, 100%);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+        overflow: hidden;
+      }}
+      .topbar {{
+        height: 5px;
+        background: linear-gradient(90deg, var(--accent), var(--tone));
+      }}
+      .content {{
+        padding: 30px;
+      }}
+      .brand {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 28px;
+      }}
+      .brand-name {{
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }}
+      .badge {{
+        display: inline-flex;
+        align-items: center;
+        min-height: 32px;
+        border: 1px solid color-mix(in srgb, var(--tone) 42%, transparent);
+        border-radius: 999px;
+        padding: 0 12px;
+        color: var(--tone);
+        background: var(--tone-muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }}
+      .status-icon {{
+        display: grid;
+        place-items: center;
+        width: 58px;
+        height: 58px;
+        margin-bottom: 18px;
+        border: 1px solid color-mix(in srgb, var(--tone) 46%, transparent);
+        border-radius: 18px;
+        color: var(--tone);
+        background: var(--tone-muted);
+      }}
+      h1 {{
+        margin: 0;
+        font-size: clamp(30px, 6vw, 44px);
+        line-height: 1.05;
+        letter-spacing: 0;
+      }}
+      .message {{
+        margin: 14px 0 0;
+        color: var(--soft);
+        font-size: 16px;
+        line-height: 1.65;
+      }}
+      .identity {{
+        margin: 26px 0;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.62);
+      }}
+      .identity-label {{
+        margin: 0 0 6px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }}
+      .identity-name {{
+        margin: 0;
+        font-size: 16px;
+        font-weight: 800;
+      }}
+      .identity-email {{
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }}
+      .actions {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+      }}
+      .button {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        border-radius: 14px;
+        padding: 0 18px;
+        color: #041015;
+        background: linear-gradient(135deg, var(--accent), var(--tone));
+        font-size: 14px;
+        font-weight: 800;
+        text-decoration: none;
+      }}
+      .hint {{
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }}
+      @media (max-width: 520px) {{
+        .content {{
+          padding: 24px;
+        }}
+        .brand {{
+          align-items: flex-start;
+          flex-direction: column;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card" aria-labelledby="approval-title">
+        <div class="topbar"></div>
+        <div class="content">
+          <div class="brand">
+            <p class="brand-name">SafeGuard 360</p>
+            <span class="badge">{escape(status_label)}</span>
+          </div>
+          <div class="status-icon" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              {icon_path}
+            </svg>
+          </div>
+          <p class="brand-name">{escape(eyebrow)}</p>
+          <h1 id="approval-title">{escape(headline)}</h1>
+          <p class="message">{safe_message}</p>
+          <div class="identity">
+            <p class="identity-label">Operator Request</p>
+            <p class="identity-name">{safe_name}</p>
+            <p class="identity-email">{safe_email}</p>
+          </div>
+          <div class="actions">
+            <a class="button" href="{safe_sign_in_url}">Go to sign in</a>
+            <p class="hint">{escape(helper)}</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>"""
 
 
 class LoginRequest(BaseModel):
@@ -397,15 +631,11 @@ def approve_registration(
         ip_address=get_client_ip(request),
     )
     return HTMLResponse(
-        f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; padding: 32px; color: #111827;">
-            <h1>Approval processed</h1>
-            <p><strong>{user.full_name}</strong> ({user.email})</p>
-            <p>{message}</p>
-          </body>
-        </html>
-        """
+        _build_approval_result_html(
+            user=user,
+            message=message,
+            approved=True,
+        )
     )
 
 
@@ -422,13 +652,9 @@ def reject_registration(
         ip_address=get_client_ip(request),
     )
     return HTMLResponse(
-        f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; padding: 32px; color: #111827;">
-            <h1>Rejection processed</h1>
-            <p><strong>{user.full_name}</strong> ({user.email})</p>
-            <p>{message}</p>
-          </body>
-        </html>
-        """
+        _build_approval_result_html(
+            user=user,
+            message=message,
+            approved=False,
+        )
     )
