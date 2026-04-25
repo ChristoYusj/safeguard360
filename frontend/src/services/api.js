@@ -489,10 +489,10 @@ export async function getChatbotContext() {
   return fetchJson("/chatbot/context");
 }
 
-export async function sendChatbotMessage(messages) {
+export async function sendChatbotMessage(messages, clientContext = {}) {
   return fetchJson("/chatbot/message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, client_context: clientContext }),
   });
 }

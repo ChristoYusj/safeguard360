@@ -20,6 +20,7 @@ import {
   RefreshIcon,
   ShieldIcon,
 } from "../components/icons";
+import { readPlatformLogs } from "../utils/platformLogs";
 
 const SUGGESTED_PROMPTS = [
   "Who's on site right now?",
@@ -48,6 +49,84 @@ function formatTimestamp(value) {
   } catch {
     return "";
   }
+}
+
+function isSameLocalDay(date, reference = new Date()) {
+  return (
+    date.getFullYear() === reference.getFullYear() &&
+    date.getMonth() === reference.getMonth() &&
+    date.getDate() === reference.getDate()
+  );
+}
+
+function normalizeFleetEventTimestamp(value) {
+  if (!value) return null;
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp);
+}
+
+function buildFleetClientContext() {
+  const fleet = readPlatformLogs().fleet || {};
+  const sessions = Array.isArray(fleet.sessions) ? fleet.sessions : [];
+  const now = new Date();
+  const recentDriverEvents = sessions
+    .flatMap((session) =>
+      (session.events || []).map((event) => {
+        const eventDate = normalizeFleetEventTimestamp(event.timestamp);
+        return {
+          event_type: event.type || event.event_type || "DRIVER",
+          details: event.details || "Driver event",
+          timestamp: eventDate ? eventDate.toISOString() : null,
+          timestamp_ms: eventDate ? eventDate.getTime() : 0,
+          driver_name: session.driverName || "Unknown driver",
+          truck_id: session.truckId || "",
+          source_label: session.sourceLabel || "",
+          coordinates: event.coordinates || "",
+        };
+      }),
+    )
+    .sort((a, b) => b.timestamp_ms - a.timestamp_ms);
+
+  const todaysEvents = recentDriverEvents.filter(
+    (event) => event.timestamp_ms && isSameLocalDay(new Date(event.timestamp_ms), now),
+  );
+  const todaysEyeClosureWarnings = todaysEvents.filter((event) =>
+    `${event.event_type} ${event.details}`.toLowerCase().includes("eye"),
+  );
+
+  return {
+    fleet: {
+      sessions_count: sessions.length,
+      driver_events_today: todaysEvents.length,
+      eye_closure_warnings_today: todaysEyeClosureWarnings.length,
+      recent_driver_events: recentDriverEvents.slice(0, 8).map((event) => ({
+        event_type: event.event_type,
+        details: event.details,
+        timestamp: event.timestamp,
+        driver_name: event.driver_name,
+        truck_id: event.truck_id,
+        source_label: event.source_label,
+        coordinates: event.coordinates,
+      })),
+    },
+  };
+}
+
+function mergeFleetContext(contextPayload, clientContext) {
+  const fleet = clientContext?.fleet || {};
+  return {
+    ...(contextPayload || {}),
+    driver_events_today: Math.max(
+      Number(contextPayload?.driver_events_today || 0),
+      Number(fleet.driver_events_today || 0),
+    ),
+    recent_driver_events:
+      Array.isArray(fleet.recent_driver_events) &&
+      fleet.recent_driver_events.length > 0
+        ? fleet.recent_driver_events
+        : contextPayload?.recent_driver_events || [],
+  };
 }
 
 function MessageBubble({ role, content }) {
@@ -137,9 +216,13 @@ function AIChatbot() {
 
   // Pull live site context for the sidebar preview card.
   const refreshContext = useCallback(() => {
+    const clientContext = buildFleetClientContext();
     getChatbotContext()
-      .then(setContext)
-      .catch((err) => console.error("[Chatbot] context failed", err));
+      .then((payload) => setContext(mergeFleetContext(payload, clientContext)))
+      .catch((err) => {
+        console.error("[Chatbot] context failed", err);
+        setContext(mergeFleetContext(null, clientContext));
+      });
   }, []);
 
   useEffect(() => {
@@ -182,7 +265,7 @@ function AIChatbot() {
         const payload = nextMessages.filter(
           (m, idx) => !(idx === 0 && m === WELCOME_MESSAGE),
         );
-        const result = await sendChatbotMessage(payload);
+        const result = await sendChatbotMessage(payload, buildFleetClientContext());
         setMessages((current) => [
           ...current,
           { role: "assistant", content: result.reply },

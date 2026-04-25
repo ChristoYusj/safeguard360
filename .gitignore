@@ -43,6 +43,9 @@ data/models/*
 
 # Backend runtime data (enrollment thumbnails, attendance snapshots)
 backend/data/
+data/attendance/
+data/faces/
+data/tmp/
 
 # OS
 .DS_Store

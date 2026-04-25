@@ -18,10 +18,14 @@ from app.db.models import Person
 from app.inference.face_recognizer import cosine_similarity, face_recognizer
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-FACES_DIR = BACKEND_ROOT / "data" / "faces"
-ATTENDANCE_SNAPSHOTS_DIR = BACKEND_ROOT / "data" / "attendance"
-TMP_DIR = BACKEND_ROOT / "data" / "tmp"
+REPO_ROOT = BACKEND_ROOT.parent
+RUNTIME_DATA_DIR = REPO_ROOT / "data"
+FACES_DIR = RUNTIME_DATA_DIR / "faces"
+ATTENDANCE_SNAPSHOTS_DIR = RUNTIME_DATA_DIR / "attendance"
+TMP_DIR = RUNTIME_DATA_DIR / "tmp"
 PERSON_PROFILE_FILENAME = "profile.json"
+THUMBNAIL_MAX_DIMENSION = 360
+THUMBNAIL_JPEG_QUALITY = 86
 
 
 @dataclass
@@ -117,6 +121,32 @@ def encode_frame_as_jpeg(frame) -> bytes:
     ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
     if not ok:
         raise ValueError("Failed to encode enrollment frame.")
+    return encoded.tobytes()
+
+
+def prepare_thumbnail_image(image_bytes: bytes) -> bytes:
+    """Return a compact JPEG thumbnail for API responses."""
+    image_bgr = decode_image_bytes(image_bytes)
+    if image_bgr is None:
+        return image_bytes
+
+    height, width = image_bgr.shape[:2]
+    largest_side = max(height, width)
+    if largest_side > THUMBNAIL_MAX_DIMENSION:
+        scale = THUMBNAIL_MAX_DIMENSION / float(largest_side)
+        image_bgr = cv2.resize(
+            image_bgr,
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        image_bgr,
+        [cv2.IMWRITE_JPEG_QUALITY, THUMBNAIL_JPEG_QUALITY],
+    )
+    if not ok:
+        return image_bytes
     return encoded.tobytes()
 
 
@@ -529,10 +559,10 @@ def write_person_thumbnail(person_id: str, image_bytes: bytes, mime_type: str) -
     ensure_runtime_dirs()
     person_dir = _get_person_dir(person_id)
     person_dir.mkdir(parents=True, exist_ok=True)
-    suffix = _suffix_from_mime_type(mime_type)
-    image_path = person_dir / f"thumbnail{suffix}"
-    image_path.write_bytes(image_bytes)
-    return str(image_path.relative_to(BACKEND_ROOT))
+    thumbnail_bytes = prepare_thumbnail_image(image_bytes)
+    image_path = person_dir / "thumbnail.jpg"
+    image_path.write_bytes(thumbnail_bytes)
+    return str(image_path.relative_to(REPO_ROOT))
 
 
 def write_attendance_snapshot(record_id: str, image_bytes: bytes, mime_type: str) -> str:
@@ -542,7 +572,7 @@ def write_attendance_snapshot(record_id: str, image_bytes: bytes, mime_type: str
     suffix = _suffix_from_mime_type(mime_type)
     image_path = record_dir / f"snapshot{suffix}"
     image_path.write_bytes(image_bytes)
-    return str(image_path.relative_to(BACKEND_ROOT))
+    return str(image_path.relative_to(REPO_ROOT))
 
 
 def _resolve_runtime_path(path_value: Optional[str]) -> Optional[Path]:
@@ -551,7 +581,13 @@ def _resolve_runtime_path(path_value: Optional[str]) -> Optional[Path]:
     candidate = Path(path_value)
     if candidate.is_absolute():
         return candidate
-    return BACKEND_ROOT / candidate
+    repo_candidate = REPO_ROOT / candidate
+    if repo_candidate.exists():
+        return repo_candidate
+    backend_candidate = BACKEND_ROOT / candidate
+    if backend_candidate.exists():
+        return backend_candidate
+    return repo_candidate
 
 
 def read_image_data_url(path_value: Optional[str]) -> Optional[str]:
