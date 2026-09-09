@@ -250,6 +250,20 @@ Create the root `.env` from the template:
 Copy-Item .env.example .env
 ```
 
+Every non-secret value in the template already works. Generate the four
+required secrets and paste them into `.env`, then set `ADMIN_EMAIL` and
+`BOOTSTRAP_ADMIN_PASSWORD`:
+
+```powershell
+python -c "import secrets; print('JWT_ACCESS_SECRET=' + secrets.token_urlsafe(48))"
+python -c "import secrets; print('JWT_REFRESH_SECRET=' + secrets.token_urlsafe(48))"
+python -c "import secrets; print('JWT_APPROVAL_SECRET=' + secrets.token_urlsafe(48))"
+python -c "import secrets; print('TOTP_ENCRYPTION_KEY=' + secrets.token_urlsafe(48))"
+```
+
+The backend refuses to start and names the missing keys if any of these is
+blank.
+
 Important variables:
 
 - `DATABASE_URL`
@@ -291,9 +305,9 @@ locally before the full system can run:
 - InsightFace weights:
   `data/models/models/buffalo_l/`
 
-On the current demo machine, the PPE detector uses:
-
-- `data/models/ppe-hansung.pt`
+Set `PPE_MODEL` in `.env` to the exact filename you placed there. The template
+uses `construction-safety.pt`, the export name for the recommended Roboflow
+dataset linked in `.env.example`.
 
 ### Sample roster import
 
@@ -332,9 +346,11 @@ Frontend default origin:
 ## Useful Commands
 
 ```powershell
-# Backend tests
+# Backend tests and lint (dev tooling is not part of requirements.txt)
 cd backend
+pip install -r requirements-dev.txt
 python -m pytest
+ruff check .
 
 # Frontend build
 cd frontend

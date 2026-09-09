@@ -29,14 +29,23 @@ class PpeDetector:
             self._import_error = str(exc)
 
     def describe(self) -> Dict[str, Any]:
+        model_path = self._resolve_model_path()
+        model_found = bool(model_path) and Path(model_path).exists()
+        if not self.available:
+            message = "PPE detector is unavailable. Gate entry will fall back to face recognition only."
+        elif not model_found:
+            message = (
+                f"PPE model '{self.settings.PPE_MODEL}' was not found in "
+                f"{self.settings.resolved_models_dir}. PPE checks report unavailable "
+                "until the file is added (see data/models/README.md)."
+            )
+        else:
+            message = "PPE detector is ready."
         return {
             "available": self.available,
             "model": self.settings.PPE_MODEL,
-            "message": (
-                "PPE detector is ready."
-                if self.available
-                else "PPE detector is unavailable. Gate entry will fall back to face recognition only."
-            ),
+            "model_found": model_found,
+            "message": message,
             "import_error": self._import_error or None,
         }
 
