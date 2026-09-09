@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     HOST: str = "127.0.0.1"
     PORT: int = 8000
 
-    # Database
-    DATABASE_URL: str = ""
+    # Database. Relative sqlite paths resolve against the repo root (see
+    # resolved_database_url), so this default matches docs/architecture.md.
+    DATABASE_URL: str = "sqlite:///./data/safeguard360.db"
 
     # Camera
     CAMERA_RESOLUTION: str = "640,480"
@@ -27,13 +28,18 @@ class Settings(BaseSettings):
 
     # Models
     MODELS_DIR: str = "./data/models"
-    PPE_MODEL: str = "yolo11n.pt"
+    # A PPE-trained checkpoint (see .env.example). Deliberately not a COCO
+    # model name: those auto-download via ultralytics and detect people, not
+    # helmets, so PPE would read "uncertain" forever without any error.
+    PPE_MODEL: str = "construction-safety.pt"
     FACE_MODEL: str = "buffalo_l"
 
     # AI Safety Chatbot. Groq is the only supported provider for the
     # production chatbot path. Leave GROQ_API_KEY empty to disable it.
+    # llama-3.3-70b-versatile was retired for free/developer keys on
+    # 2026-08-16; gpt-oss-120b is Groq's documented replacement.
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     CHATBOT_MAX_HISTORY: int = 20
     CHATBOT_MAX_TOKENS: int = 600
 
@@ -127,6 +133,7 @@ class Settings(BaseSettings):
     @property
     def missing_required_auth_settings(self) -> list[str]:
         required = {
+            "DATABASE_URL": self.DATABASE_URL,
             "JWT_ACCESS_SECRET": self.JWT_ACCESS_SECRET,
             "JWT_REFRESH_SECRET": self.JWT_REFRESH_SECRET,
             "JWT_APPROVAL_SECRET": self.JWT_APPROVAL_SECRET,

@@ -27,28 +27,33 @@ The local machine running the full platform should have a structure like:
 
 ```text
 data/models/
-|- ppe-hansung.pt            PPE detector model used by the current demo setup
+|- construction-safety.pt    PPE detector checkpoint (YOLOv8 .pt export)
 `- models/
    `- buffalo_l/             InsightFace model bundle
 ```
 
 ## What each model is used for
 
-- `ppe-hansung.pt`
-  PPE object detection for helmet and vest compliance
+- `construction-safety.pt`
+  PPE object detection for helmet and vest compliance. Train or export it from
+  the Roboflow `construction-safety-gsnvb` dataset (see `.env.example`); the
+  detector maps the Hardhat / Safety Vest classes and ignores the negative
+  `NO-*` classes.
 - `models/buffalo_l/`
-  InsightFace / ArcFace face-recognition assets
+  InsightFace / ArcFace face-recognition assets (downloaded by InsightFace on
+  first use when absent)
 
 ## Configuration
 
 The runtime reads these through the root `.env`:
 
 - `MODELS_DIR=./data/models`
-- `PPE_MODEL=ppe-hansung.pt`
+- `PPE_MODEL=construction-safety.pt`
 - `FACE_MODEL=buffalo_l`
 
-`PPE_MODEL` may also be set to a different filename or explicit path if you
-replace the PPE detector model.
+`PPE_MODEL` must match the actual filename you placed in `data/models/` (or be
+an explicit path). If the file is missing, the PPE detector reports itself
+unavailable and the gate falls back to face recognition only.
 
 ## If you are setting the project up on a new machine
 
