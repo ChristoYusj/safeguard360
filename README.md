@@ -361,6 +361,36 @@ cd frontend
 npm test
 ```
 
+## License and third-party licences
+
+SafeGuard 360 is released under the **GNU Affero General Public License
+v3.0** (see [LICENSE](LICENSE)). AGPL was chosen because the PPE detector
+depends on [Ultralytics](https://github.com/ultralytics/ultralytics), which is
+itself AGPL-3.0; a permissive licence for this repository would not change the
+obligations that dependency imposes on a deployment.
+
+Runtime components carry their own terms, which apply regardless of this
+repository's licence:
+
+| Component | Licence | Notes |
+|---|---|---|
+| `ultralytics` (YOLO) | AGPL-3.0 | Ultralytics states that models trained with it inherit AGPL. Commercial use without source disclosure needs an Ultralytics Enterprise licence. |
+| InsightFace (`insightface`, `buffalo_l` weights) | Code MIT; pretrained model packs **non-commercial research use only** | The face-recognition weights this project uses are not licensed for commercial deployment. |
+| MediaPipe (`mediapipe`, `face_landmarker.task`) | Apache-2.0 | |
+| OpenCV, ONNX Runtime, FastAPI, React and the rest of `requirements.txt` / `package.json` | Permissive (Apache-2.0 / MIT / BSD) | |
+| Your PPE checkpoint (`PPE_MODEL`) | Depends on the dataset and framework you trained it with | The Roboflow `construction-safety-gsnvb` dataset referenced in `.env.example` has its own terms; check them before redistributing weights. |
+
+The PPE weights used on the original demo machine are not part of this
+repository and their provenance is not documented here.
+
+## AI assistance
+
+This project was built with AI coding assistants (OpenAI Codex during the
+original build; Anthropic Claude Code for the 2026 audit and upgrade series).
+[AI_DISCLOSURE.md](AI_DISCLOSURE.md) says what they did, what the author did,
+and how to read the commit history. The author reviewed and tested every
+change and is responsible for the result.
+
 ## Notes
 
 - `reset_admin_password.py` is kept as the admin recovery tool
