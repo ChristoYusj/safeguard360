@@ -106,7 +106,7 @@ async def list_camera_sources():
                         name=f"Webcam {i}"
                     ))
                 cap.release()
-        except Exception as e:
+        except Exception:
             logger.exception("Camera source probe failed for index %s.", i)
     
     # Add video file option

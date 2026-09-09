@@ -99,7 +99,7 @@ class ConnectionManager:
             current_domain = self._classify_status_domain({"mode": camera_manager.mode})
             if latest_frame and self._can_receive_domain(role, current_domain):
                 await websocket.send_bytes(latest_frame)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to send initial live frame.")
 
     async def connect_events(self, websocket: WebSocket, role: str | None):
@@ -119,7 +119,7 @@ class ConnectionManager:
                     "type": "status",
                     "camera": state,
                 }))
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to send initial status.")
     
     def disconnect_live(self, websocket: WebSocket):
@@ -155,7 +155,7 @@ class ConnectionManager:
                 logger.warning("Dropping slow live WebSocket client during frame broadcast.")
                 self.live_frame_slow_drop_count += 1
                 dead.add(ws)
-            except Exception as e:
+            except Exception:
                 logger.exception("WebSocket live send error.")
                 dead.add(ws)
         
@@ -180,7 +180,7 @@ class ConnectionManager:
                 if not self._can_receive_domain(role, domain):
                     continue
                 await ws.send_text(message)
-            except Exception as e:
+            except Exception:
                 logger.exception("WebSocket status send error.")
                 dead.add(ws)
         
@@ -202,7 +202,7 @@ class ConnectionManager:
                 if not self._can_receive_domain(role, domain):
                     continue
                 await ws.send_text(message)
-            except Exception as e:
+            except Exception:
                 logger.exception("WebSocket event send error.")
                 dead.add(ws)
         
@@ -248,7 +248,7 @@ def setup_websocket(app: FastAPI):
                     break
         except WebSocketDisconnect:
             pass
-        except Exception as e:
+        except Exception:
             logger.exception("Live websocket error.")
         finally:
             manager.disconnect_live(websocket)
@@ -267,7 +267,7 @@ def setup_websocket(app: FastAPI):
                     break
         except WebSocketDisconnect:
             pass
-        except Exception as e:
+        except Exception:
             logger.exception("Events websocket error.")
         finally:
             manager.disconnect_events(websocket)

@@ -18,7 +18,9 @@ os.environ.setdefault("JWT_ACCESS_SECRET", "test-access")
 os.environ.setdefault("JWT_REFRESH_SECRET", "test-refresh")
 os.environ.setdefault("JWT_APPROVAL_SECRET", "test-approval")
 os.environ.setdefault("TOTP_ENCRYPTION_KEY", "0" * 44)
-os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+# Hard-set, not setdefault: a DATABASE_URL exported in the developer's shell
+# must never make the suite touch a real database.
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 import pytest
 from sqlalchemy import create_engine

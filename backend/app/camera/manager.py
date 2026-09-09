@@ -671,7 +671,7 @@ class CameraManager:
                 else:
                     self.error = f"Unknown source type: {source_type}"
                     return False
-            except Exception:
+            except Exception as e:
                 self.error = f"Exception opening camera: {e}"
                 logger.exception("Exception opening camera.")
                 return False

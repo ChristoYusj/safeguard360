@@ -3,7 +3,7 @@ Video File Camera Source
 """
 import cv2
 import time
-from typing import Optional, Tuple
+from typing import Optional
 from app.camera.base import CameraSource, Frame, CameraInfo
 
 

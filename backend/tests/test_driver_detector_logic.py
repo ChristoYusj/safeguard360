@@ -40,7 +40,7 @@ def _set_eye(landmarks, indices, *, center_x: float, center_y: float, ear: float
         (center_x + horizontal / 4.0, center_y + half_vertical),
         (center_x - horizontal / 4.0, center_y + half_vertical),
     ]
-    for index, (x, y) in zip(indices, points):
+    for index, (x, y) in zip(indices, points, strict=True):
         landmarks[index] = FakeLandmark(x=x, y=y)
 
 

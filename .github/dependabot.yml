@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: monthly
+    groups:
+      backend-minor:
+        update-types: [minor, patch]
+    ignore:
+      # Pinned deliberately: mediapipe 0.10.14 is the last wheel line with the
+      # legacy mp.solutions API, and numpy must stay 1.x alongside it.
+      - dependency-name: mediapipe
+      - dependency-name: numpy
+        versions: [">=2"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: monthly
+    groups:
+      frontend-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    env:
+      # Never let CI touch a real database; conftest also forces this.
+      DATABASE_URL: "sqlite:///:memory:"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "backend/requirements*.txt"
+
+      - name: System libraries for OpenCV / MediaPipe wheels
+        run: sudo apt-get update -q && sudo apt-get install -y -q libgl1 libglib2.0-0
+
+      - name: Install pinned dependencies (CI subset)
+        # insightface and ultralytics are imported lazily and never exercised by
+        # the tests; skipping them keeps CI off the multi-GB torch download.
+        run: |
+          uv venv .venv
+          grep -vE '^(insightface|ultralytics)==' backend/requirements.txt > /tmp/requirements-ci.txt
+          uv pip install --python .venv/bin/python -r /tmp/requirements-ci.txt
+          uv pip install --python .venv/bin/python $(grep -E '^(pytest|ruff)==' backend/requirements-dev.txt)
+
+      - name: Lint
+        run: .venv/bin/ruff check backend
+
+      - name: Test
+        working-directory: backend
+        run: ../.venv/bin/python -m pytest -q -p no:cacheprovider
+
+  frontend:
+    name: Frontend (lint + vitest + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Lint (advisory until the baseline is clean)
+        run: npm run lint
+        continue-on-error: true
+
+      - run: npm test
+
+      - run: npm run build

@@ -356,9 +356,9 @@ def send_chat(
 
     try:
         reply = response.choices[0].message.content or ""
-    except Exception:
+    except Exception as exc:
         logger.exception("Chatbot: could not parse response.")
-        raise ChatbotError("LLM returned an unexpected response shape.")
+        raise ChatbotError("LLM returned an unexpected response shape.") from exc
 
     return {
         "reply": reply.strip(),

@@ -77,7 +77,7 @@ async def frame_broadcaster():
                     })
 
             await asyncio.sleep(0.02)
-        except Exception as e:
+        except Exception:
             logger.exception("Frame broadcaster error.")
             await asyncio.sleep(1)
 
