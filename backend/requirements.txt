@@ -1,40 +1,36 @@
-# Core (install first)
-fastapi>=0.109.0
-uvicorn>=0.27.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-python-multipart>=0.0.6
-python-dotenv>=1.0.0
-bcrypt>=4.1.2
-PyJWT>=2.8.0
-cryptography>=42.0.0
-pyotp>=2.9.0
-qrcode>=7.4.2
+# Runtime dependencies, pinned to the versions verified together on
+# Python 3.12 / Windows on 2026-09-10 (`pytest` green, all imports load).
+# Bump deliberately and re-run the test suite; do not loosen to `>=`.
 
-# Database (without greenlet/async)
-sqlalchemy>=2.0.25
+fastapi==0.141.1
+starlette==1.6.0              # imported directly by app.middleware
+uvicorn==0.52.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+python-dotenv==1.2.3
+bcrypt==5.0.0
+PyJWT==2.13.0
+cryptography==50.0.1
+pyotp==2.10.0
+qrcode==8.2
+SQLAlchemy==2.0.52
+groq==1.7.0
+httpx==0.28.1
 
-# Chatbot (safety assistant)
-groq>=0.31.0
-httpx>=0.27.0
-
-# AI/ML - Phase 1 (no build tools needed)
-opencv-python>=4.9.0
-numpy>=1.24.0
-pillow>=10.0.0
-
-# MediaPipe for face/pose detection.
-# IMPORTANT: mediapipe 0.10.15+ removed the `mp.solutions.*` API on some
-# platforms (only `mp.tasks` remains) and our live face-box overlay uses
-# `mp.solutions.face_detection.FaceDetection`. Pin to the last version that
-# still ships the solutions API to avoid silent overlay failures.
-mediapipe>=0.10.9,<0.10.15
-
-# AI/ML — PPE detection (YOLOv8)
-ultralytics>=8.1.0
-onnxruntime>=1.16.0
-
-# AI/ML — Face recognition (ArcFace).
-# NOTE: requires Microsoft C++ Build Tools on Windows. If the install fails,
-# install the Visual Studio Build Tools first, then re-run pip install.
-insightface>=0.7.3
+# Computer vision / inference
+opencv-python==4.11.0.86
+# numpy must stay on 1.x while mediapipe is pinned to 0.10.14 (NumPy 1.x ABI);
+# an unbounded numpy resolves to 2.x and mediapipe fails to import.
+numpy==1.26.4
+pillow==12.3.0
+# 0.10.14 is the last wheel line that still ships the legacy `mp.solutions`
+# API used by face_recognizer.py and gate_attendance.py. driver.py already uses
+# the Tasks FaceLandmarker; porting the two legacy call sites unlocks 1.x.
+mediapipe==0.10.14
+# AGPL-3.0. See README "License & third-party licences".
+ultralytics==8.4.146
+onnxruntime==1.29.0
+# 2.0 installs without a C++ compiler. Pretrained model packs (buffalo_l) are
+# licensed for non-commercial research use only.
+insightface==2.0

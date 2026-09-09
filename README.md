@@ -346,9 +346,11 @@ Frontend default origin:
 ## Useful Commands
 
 ```powershell
-# Backend tests
+# Backend tests and lint (dev tooling is not part of requirements.txt)
 cd backend
+pip install -r requirements-dev.txt
 python -m pytest
+ruff check .
 
 # Frontend build
 cd frontend
