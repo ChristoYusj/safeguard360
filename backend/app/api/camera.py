@@ -49,13 +49,35 @@ class CameraSourceInfo(BaseModel):
     name: str
 
 
-def _build_camera_response():
+def _redact_source_id(source_id: str) -> str:
+    """Hide credentials embedded in stream URLs (rtsp://user:pass@host/...)."""
+    if "://" in source_id and "@" in source_id:
+        scheme, rest = source_id.split("://", 1)
+        _userinfo, host = rest.rsplit("@", 1)
+        return f"{scheme}://***@{host}"
+    return source_id
+
+
+def _build_camera_response(role: str | None = None):
+    """Camera state as the given role is allowed to see it.
+
+    Managers and admins get everything. A fleet operator never receives the
+    gate payload (worker identity, PPE verdict) and a safety operator never
+    receives the driver payload; neither sees stream credentials.
+    """
     state = camera_manager.get_state()
     payload = state.__dict__.copy()
     if state.mode == "gate":
         payload["gate"] = camera_manager.get_gate_state()
     elif state.mode == "driver":
         payload["driver"] = camera_manager.get_driver_state()
+
+    if role not in {ADMIN_ROLE, GENERAL_MANAGER_ROLE}:
+        if role != SAFETY_OPERATOR_ROLE:
+            payload.pop("gate", None)
+        if role != FLEET_OPERATOR_ROLE:
+            payload.pop("driver", None)
+        payload["source_id"] = _redact_source_id(str(payload.get("source_id") or ""))
 
     return CameraStateResponse(**payload)
 
@@ -83,6 +105,9 @@ def _assert_camera_access(request: Request, *, owner_module: Optional[str], mode
         if mode is not None and mode not in {"gate", "idle"}:
             raise HTTPException(status_code=403, detail="Forbidden.")
         return
+
+    # Fail closed: an unknown or missing role never controls the camera.
+    raise HTTPException(status_code=403, detail="Forbidden.")
 
 
 @router.get("/sources", response_model=List[CameraSourceInfo])
@@ -145,7 +170,7 @@ async def start_camera(request: Request, payload: CameraStartRequest):
             detail=f"Failed to start camera: {state.error}"
         )
 
-    return _build_camera_response()
+    return _build_camera_response(_get_request_role(request))
 
 
 @router.post("/stop", response_model=CameraStateResponse)
@@ -168,13 +193,13 @@ async def stop_camera(
             detail=f"Camera is currently controlled by {camera_manager.get_owner_label()}.",
         )
     camera_manager.stop()
-    return _build_camera_response()
+    return _build_camera_response(_get_request_role(request))
 
 
 @router.get("/state", response_model=CameraStateResponse)
-async def get_camera_state():
-    """Get current camera state."""
-    return _build_camera_response()
+async def get_camera_state(request: Request):
+    """Get current camera state, scoped to the caller's role."""
+    return _build_camera_response(_get_request_role(request))
 
 
 @router.post("/mode/{mode}", response_model=CameraStateResponse)

@@ -80,6 +80,31 @@ def derive_legacy_role(role: str | None, email: str | None) -> str:
     return GENERAL_MANAGER_ROLE
 
 
+# Event/alert domains. Every persisted event today is gate-side ("PPE");
+# driver-side events use category "DRIVER". Safety operators see the gate
+# domain, fleet operators the driver domain, managers and admins both.
+DRIVER_EVENT_CATEGORIES = frozenset({"DRIVER"})
+
+
+def event_category_domain(category: str | None) -> str:
+    return "driver" if (category or "").strip().upper() in DRIVER_EVENT_CATEGORIES else "gate"
+
+
+def role_can_see_domain(role: str | None, domain: str) -> bool:
+    normalized_role = normalize_user_role(role)
+    if normalized_role in {ADMIN_ROLE, GENERAL_MANAGER_ROLE}:
+        return True
+    if domain == "driver":
+        return normalized_role == FLEET_OPERATOR_ROLE
+    if domain == "gate":
+        return normalized_role == SAFETY_OPERATOR_ROLE
+    return False
+
+
+def visible_event_domains(role: str | None) -> frozenset[str]:
+    return frozenset(d for d in ("gate", "driver") if role_can_see_domain(role, d))
+
+
 def has_api_role_access(role: str | None, path: str, method: str) -> bool:
     normalized_role = normalize_user_role(role)
     if normalized_role not in ALL_USER_ROLES:
@@ -112,13 +137,18 @@ def has_api_role_access(role: str | None, path: str, method: str) -> bool:
     if path.startswith("/api/persons/"):
         return False
 
+    # Events and alerts are readable by every operator role; the handlers
+    # restrict the rows to the caller's domain (gate vs driver) and check the
+    # domain again before an acknowledgement. The old rule granted these to
+    # fleet operators and denied safety operators, although every persisted
+    # event was a gate-side PPE event.
     if path.startswith("/api/events") or path.startswith("/api/alerts"):
-        return normalized_role in {FLEET_OPERATOR_ROLE, GENERAL_MANAGER_ROLE}
-
-    # AI Safety Assistant is available to any authenticated operator — it
-    # only reads aggregate site state (counts + recent events) and never
-    # mutates anything.
-    if path.startswith("/api/chatbot"):
         return True
+
+    # The assistant's site snapshot names individual workers (who is on site,
+    # recent gate activity), so it is limited to the roles that may read the
+    # roster and attendance log in full.
+    if path.startswith("/api/chatbot"):
+        return normalized_role == GENERAL_MANAGER_ROLE
 
     return False
