@@ -417,6 +417,7 @@ def verify_two_factor_login(
         db=db,
         token=request.cookies.get(PENDING_2FA_COOKIE_NAME),
         code=payload.code,
+        ip_address=get_client_ip(request),
     )
     access_token, refresh_token = issue_login_tokens(db, user)
     record_login_success(
@@ -433,7 +434,7 @@ def verify_two_factor_login(
 
 @router.post("/register", status_code=202)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
-    pending_user = register_pending_operator(
+    register_pending_operator(
         db=db,
         request=request,
         full_name=payload.full_name,
@@ -441,10 +442,9 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         role=payload.role,
         password=payload.password,
     )
-    return {
-        "message": "Your account request was submitted and is pending approval.",
-        "user": serialize_user(pending_user),
-    }
+    # Identical body whether or not the email already had an account (the
+    # service returns None in that case); the UI only shows the message.
+    return {"message": "Your account request was submitted and is pending approval."}
 
 
 @router.post("/password-reset/request", status_code=202)
