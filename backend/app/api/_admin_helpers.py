@@ -1,5 +1,5 @@
 """
-Shared helpers for admin-only API routes.
+Shared helpers for API routes that need the authenticated operator.
 """
 from __future__ import annotations
 
@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.db.models import User
 from app.services.rbac import ADMIN_ROLE
+
+
+def get_request_role(request: Request) -> str | None:
+    """Role of the operator the auth middleware attached, or None."""
+    current_user = getattr(request.state, "user", None)
+    return getattr(current_user, "role", None)
 
 
 def get_admin_user(request: Request, db: Session) -> User:

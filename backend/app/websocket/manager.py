@@ -14,12 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.db.connection import SessionLocal
 from app.services.auth import ACCESS_COOKIE_NAME, get_user_by_access_token
-from app.services.rbac import (
-    ADMIN_ROLE,
-    FLEET_OPERATOR_ROLE,
-    GENERAL_MANAGER_ROLE,
-    SAFETY_OPERATOR_ROLE,
-)
+from app.services.rbac import role_can_see_domain
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +57,19 @@ class ConnectionManager:
     def _can_receive_domain(role: str | None, domain: str) -> bool:
         if domain == "generic":
             return True
-        if role in {ADMIN_ROLE, GENERAL_MANAGER_ROLE}:
-            return True
-        if domain == "driver":
-            return role == FLEET_OPERATOR_ROLE
-        if domain == "gate":
-            return role == SAFETY_OPERATOR_ROLE
-        return False
+        return role_can_see_domain(role, domain)
 
     @staticmethod
     def _classify_status_domain(status: dict) -> str:
+        # The owning module decides the domain even while the mode is still
+        # "idle" (between start and the mode call, or with recognition paused);
+        # classifying by mode alone streamed the gate camera to fleet operators
+        # during those windows.
+        owner_module = (status or {}).get("owner_module")
+        if owner_module == "attendance":
+            return "gate"
+        if owner_module == "drivers":
+            return "driver"
         mode = (status or {}).get("mode")
         if mode == "driver":
             return "driver"
@@ -96,7 +94,9 @@ class ConnectionManager:
             from app.camera.manager import camera_manager
 
             latest_frame = camera_manager.get_latest_frame()
-            current_domain = self._classify_status_domain({"mode": camera_manager.mode})
+            current_domain = self._classify_status_domain(
+                {"mode": camera_manager.mode, "owner_module": camera_manager.owner_module}
+            )
             if latest_frame and self._can_receive_domain(role, current_domain):
                 await websocket.send_bytes(latest_frame)
         except Exception:
@@ -136,7 +136,9 @@ class ConnectionManager:
             return
 
         from app.camera.manager import camera_manager
-        frame_domain = self._classify_status_domain({"mode": camera_manager.mode})
+        frame_domain = self._classify_status_domain(
+                {"mode": camera_manager.mode, "owner_module": camera_manager.owner_module}
+            )
 
         dead = set()
         for ws in self.live_connections:

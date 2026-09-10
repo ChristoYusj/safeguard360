@@ -39,8 +39,10 @@ function App() {
               <Route element={<RoleRoute allowedRoles={[ROLES.ADMIN, ROLES.FLEET_OPERATOR, ROLES.SAFETY_OPERATOR, ROLES.GENERAL_MANAGER]} />}>
                 <Route path="logs" element={<Logs />} />
               </Route>
-              <Route element={<RoleRoute allowedRoles={[ROLES.ADMIN]} />}>
+              <Route element={<RoleRoute allowedRoles={[ROLES.ADMIN, ROLES.GENERAL_MANAGER]} />}>
                 <Route path="ai-chatbot" element={<AIChatbot />} />
+              </Route>
+              <Route element={<RoleRoute allowedRoles={[ROLES.ADMIN]} />}>
                 <Route path="enrollment" element={<Enrollment />} />
                 <Route path="user-management" element={<UserManagement />} />
               </Route>

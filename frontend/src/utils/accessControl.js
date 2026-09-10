@@ -65,8 +65,11 @@ export function canAccessUserManagement(role) {
   return role === ROLES.ADMIN;
 }
 
+// Mirrors backend/app/services/rbac.py (the enforcing copy): the assistant's
+// snapshot names individual workers, so only roles that may read the roster
+// and attendance log in full get it.
 export function canAccessChatbot(role) {
-  return role === ROLES.ADMIN;
+  return role === ROLES.ADMIN || role === ROLES.GENERAL_MANAGER;
 }
 
 export function canAccessPath(role, path) {
@@ -97,5 +100,6 @@ export function canAccessPath(role, path) {
   if (path === "/ai-chatbot" || path.startsWith("/ai-chatbot/")) {
     return canAccessChatbot(role);
   }
-  return true;
+  // Unknown paths are denied; a new page must be added here deliberately.
+  return false;
 }
