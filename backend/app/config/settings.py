@@ -23,6 +23,12 @@ class Settings(BaseSettings):
 
     # Camera. Capture runs unthrottled; FPS_LIMIT paces the preview broadcast.
     FPS_LIMIT: int = 30
+    # Directory that `video_file` camera sources must live in. Operators pick a
+    # file by name; the API refuses anything that resolves outside this tree.
+    VIDEO_SOURCES_DIR: str = "./data/video"
+    # Optional allow-list for `ip_stream` sources: comma-separated hostnames or
+    # IPs. Empty = any host except loopback, link-local, multicast, unspecified.
+    CAMERA_STREAM_ALLOWED_HOSTS: str = ""
 
     # Models
     MODELS_DIR: str = "./data/models"
@@ -97,6 +103,22 @@ class Settings(BaseSettings):
         if not candidate.is_absolute():
             candidate = REPO_ROOT / raw
         return str(candidate.resolve())
+
+    @property
+    def resolved_video_sources_dir(self) -> Path:
+        raw = (self.VIDEO_SOURCES_DIR or "").strip() or "./data/video"
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / raw
+        return candidate.resolve()
+
+    @property
+    def camera_stream_allowed_hosts(self) -> set[str]:
+        return {
+            host.strip().lower()
+            for host in (self.CAMERA_STREAM_ALLOWED_HOSTS or "").split(",")
+            if host.strip()
+        }
 
     @property
     def resolved_mail_transport(self) -> str:

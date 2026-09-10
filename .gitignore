@@ -72,3 +72,5 @@ frontend/.vite/
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite-journal
+# Sample clips used as video_file camera sources
+data/video/

@@ -43,7 +43,8 @@ class AttendanceCreateRequest(BaseModel):
     direction: Literal["ENTRY", "EXIT"] = "ENTRY"
     ppe_compliant: bool = True
     access_granted: bool = True
-    snapshot_data_url: Optional[str] = None
+    # ~7.5 MB of base64; the whole body is buffered before decoding.
+    snapshot_data_url: Optional[str] = Field(default=None, max_length=10_000_000)
     ppe_details: Optional[Dict[str, Any]] = None
     camera_source_type: Optional[str] = None
     camera_source_id: Optional[str] = None
@@ -212,7 +213,10 @@ def _create_attendance_record(
     db.flush()
 
     if snapshot_data_url:
-        image_bytes, mime_type = parse_image_data_url(snapshot_data_url)
+        try:
+            image_bytes, mime_type = parse_image_data_url(snapshot_data_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         record.snapshot_path = write_attendance_snapshot(record.id, image_bytes, mime_type)
     elif snapshot_path:
         record.snapshot_path = snapshot_path
