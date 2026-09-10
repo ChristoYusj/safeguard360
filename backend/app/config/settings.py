@@ -44,8 +44,14 @@ class Settings(BaseSettings):
     # 2026-08-16; gpt-oss-120b is Groq's documented replacement.
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-120b"
+    # Optional OpenAI-compatible endpoint (self-hosted gateway or proxy).
+    # Empty = the provider's default.
+    LLM_BASE_URL: str = ""
     CHATBOT_MAX_HISTORY: int = 20
     CHATBOT_MAX_TOKENS: int = 600
+    # Assistant requests per signed-in user per minute. The free Groq tier
+    # allows 30 requests/minute for the whole key.
+    CHATBOT_RATE_LIMIT_PER_MINUTE: int = 20
 
     # CORS / Cookies
     CORS_ALLOWED_ORIGINS: str = ""
