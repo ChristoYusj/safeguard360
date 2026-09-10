@@ -55,15 +55,6 @@ export function AttendanceIcon(props) {
   );
 }
 
-export function InzoneIcon(props) {
-  return (
-    <Icon {...props}>
-      <path d="M12 3.8 20 18.5H4L12 3.8Z" />
-      <path d="M12 9v4.3M12 16.8h.01" />
-    </Icon>
-  );
-}
-
 export function LogsIcon(props) {
   return (
     <Icon {...props}>
@@ -260,22 +251,6 @@ export function ShieldIcon(props) {
   );
 }
 
-export function CaptainShieldIcon({
-  className = "",
-  size = 20,
-  ...props
-}) {
-  return <ShieldIcon className={className} size={size} {...props} />;
-}
-
-export function ActivityIcon(props) {
-  return (
-    <Icon {...props}>
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </Icon>
-  );
-}
-
 export function CameraIcon(props) {
   return (
     <Icon {...props}>
@@ -296,25 +271,6 @@ export function UsersIcon(props) {
   );
 }
 
-export function BellIcon(props) {
-  return (
-    <Icon {...props}>
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </Icon>
-  );
-}
-
-export function BarChartIcon(props) {
-  return (
-    <Icon {...props}>
-      <line x1="12" y1="20" x2="12" y2="10" />
-      <line x1="18" y1="20" x2="18" y2="4" />
-      <line x1="6" y1="20" x2="6" y2="16" />
-    </Icon>
-  );
-}
-
 export function CircleIcon(props) {
   return (
     <Icon {...props}>
@@ -328,7 +284,6 @@ export const icons = {
   drivers: DriversIcon,
   steeringWheel: SteeringWheelIcon,
   attendance: AttendanceIcon,
-  inzone: InzoneIcon,
   logs: LogsIcon,
   chatbot: ChatbotIcon,
   settings: SettingsIcon,
@@ -348,11 +303,7 @@ export const icons = {
   refresh: RefreshIcon,
   externalLink: ExternalLinkIcon,
   shield: ShieldIcon,
-  captainShield: CaptainShieldIcon,
-  activity: ActivityIcon,
   camera: CameraIcon,
   users: UsersIcon,
-  bell: BellIcon,
-  barChart: BarChartIcon,
   circle: CircleIcon,
 };
