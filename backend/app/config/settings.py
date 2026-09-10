@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # CORS / Cookies
     CORS_ALLOWED_ORIGINS: str = ""
     COOKIE_SECURE: bool = False
+    # Reverse proxies whose X-Forwarded-For header may be trusted (IPs or
+    # CIDRs, comma-separated). Empty = the header is ignored and the TCP peer
+    # address is used for lockouts and audit rows.
+    TRUSTED_PROXIES: str = ""
 
     # Auth
     JWT_ACCESS_SECRET: str = ""
@@ -138,6 +142,14 @@ class Settings(BaseSettings):
         if not candidate.is_absolute():
             candidate = REPO_ROOT / raw
         return str(candidate.resolve())
+
+    @property
+    def trusted_proxies(self) -> list[str]:
+        return [
+            entry.strip()
+            for entry in (self.TRUSTED_PROXIES or "").split(",")
+            if entry.strip()
+        ]
 
     @property
     def cors_allowed_origins(self) -> list[str]:

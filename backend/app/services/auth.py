@@ -6,8 +6,11 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import base64
+import functools
 import hashlib
 import hmac
+import html
+import ipaddress
 import io
 import json
 import logging
@@ -126,7 +129,31 @@ def hash_refresh_token(token: str) -> str:
 
 
 def hash_backup_code(code: str) -> str:
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+    """HMAC-SHA256 keyed with the server's TOTP encryption key.
+
+    Plain SHA-256 of a 32-bit code was brute-forceable offline from a copy of
+    the database in minutes; the keyed hash needs the server secret too.
+    """
+    key = get_settings().TOTP_ENCRYPTION_KEY.encode("utf-8")
+    return hmac.new(key, code.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+MAX_TRACKED_IPS = 10_000
+
+
+def _bound_ip_failures(now: datetime) -> None:
+    """Keep the in-memory failure table from growing without limit.
+
+    Called under _IP_FAILURES_LOCK. Drops entries whose window has expired,
+    then the oldest entries if a flood of distinct addresses is still over
+    the cap.
+    """
+    if len(_IP_FAILURES) <= MAX_TRACKED_IPS:
+        return
+    for key in [k for k in _IP_FAILURES if not _prune_ip_attempts(k, now)]:
+        _IP_FAILURES.pop(key, None)
+    while len(_IP_FAILURES) > MAX_TRACKED_IPS:
+        _IP_FAILURES.pop(next(iter(_IP_FAILURES)), None)
 
 
 def _prune_ip_attempts(ip_address: str, now: datetime) -> deque[datetime]:
@@ -152,8 +179,10 @@ def record_ip_failure(ip_address: str) -> None:
         return
 
     with _IP_FAILURES_LOCK:
-        attempts = _prune_ip_attempts(ip_address, utcnow())
-        attempts.append(utcnow())
+        now = utcnow()
+        attempts = _prune_ip_attempts(ip_address, now)
+        attempts.append(now)
+        _bound_ip_failures(now)
 
 
 def clear_ip_failures(ip_address: str) -> None:
@@ -164,13 +193,41 @@ def clear_ip_failures(ip_address: str) -> None:
         _IP_FAILURES.pop(ip_address, None)
 
 
+def _peer_is_trusted_proxy(peer: str) -> bool:
+    entries = get_settings().trusted_proxies
+    if not entries or not peer:
+        return False
+    try:
+        peer_address = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer in entries
+    for entry in entries:
+        try:
+            if "/" in entry:
+                if peer_address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif peer_address == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """The address used for lockouts and audit rows.
+
+    X-Forwarded-For is honoured only when the TCP peer is a configured
+    TRUSTED_PROXIES entry. Trusting it unconditionally let any client choose
+    its own address: a rotating header defeated the IP lockout and wrote
+    attacker-chosen addresses into the audit log.
+    """
+    peer = request.client.host if request.client else ""
+    if peer and _peer_is_trusted_proxy(peer):
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        first_hop = forwarded_for.split(",")[0].strip() if forwarded_for else ""
+        if first_hop:
+            return first_hop
+    return peer or "unknown"
 
 
 def _reset_failed_login_state(user: User) -> None:
@@ -229,6 +286,12 @@ def build_login_error_detail(
     if retry_after_minutes is not None:
         payload["retry_after_minutes"] = retry_after_minutes
     return payload
+
+
+@functools.lru_cache(maxsize=1)
+def _dummy_password_hash() -> str:
+    """A real bcrypt hash to check unknown-account logins against."""
+    return hash_password(secrets.token_urlsafe(24))
 
 
 def ensure_login_request_is_valid(email: str, password: str) -> tuple[str, str]:
@@ -436,8 +499,8 @@ def _build_approval_email_html(
       <h2>New operator registration request</h2>
       <p>A new operator requested access to SafeGuard 360.</p>
       <ul>
-        <li><strong>Name:</strong> {user.full_name}</li>
-        <li><strong>Email:</strong> {user.email}</li>
+        <li><strong>Name:</strong> {html.escape(user.full_name or "")}</li>
+        <li><strong>Email:</strong> {html.escape(user.email or "")}</li>
         <li><strong>Requested Role:</strong> {get_role_label(role)}</li>
       </ul>
       <p>Choose whether to approve or reject this request.</p>
@@ -454,7 +517,7 @@ def _build_password_reset_email_html(*, full_name: str, reset_url: str) -> str:
     return f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
       <h2>Reset your SafeGuard 360 password</h2>
-      <p>Hello {full_name},</p>
+      <p>Hello {html.escape(full_name or "")},</p>
       <p>Use the link below to choose a new password for your operator account.</p>
       <p>
         <a href="{reset_url}" style="display:inline-block;padding:12px 18px;background:#0ea5e9;color:#ffffff;text-decoration:none;border-radius:8px;">Reset password</a>
@@ -613,8 +676,9 @@ def generate_backup_codes() -> tuple[list[str], str]:
     plain_codes = []
     hashed_codes = []
     for _ in range(BACKUP_CODE_COUNT):
-        raw = secrets.token_hex(4).upper()
-        formatted = f"{raw[:4]}-{raw[4:]}"
+        # 40 bits per code (was 32), shown as XXXXX-XXXXX.
+        raw = secrets.token_hex(5).upper()
+        formatted = f"{raw[:5]}-{raw[5:]}"
         plain_codes.append(formatted)
         hashed_codes.append(hash_backup_code(formatted))
     return plain_codes, json.dumps(hashed_codes)
@@ -638,9 +702,14 @@ def consume_backup_code(user: User, submitted_code: str) -> bool:
         return False
     hashed_codes = parse_backup_codes(user.backup_codes)
     hashed_value = hash_backup_code(normalized)
-    if hashed_value not in hashed_codes:
+    # Constant-time comparison against every stored code; `in` short-circuits.
+    matched = None
+    for stored in hashed_codes:
+        if hmac.compare_digest(stored, hashed_value):
+            matched = stored
+    if matched is None:
         return False
-    hashed_codes.remove(hashed_value)
+    hashed_codes.remove(matched)
     user.backup_codes = json.dumps(hashed_codes)
     return True
 
@@ -779,10 +848,11 @@ def register_pending_operator(
 
     existing_user = db.query(User).filter(User.email == normalized_email).first()
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An account request already exists for that email.",
-        )
+        # A 409 here told anyone which emails hold an account. The caller
+        # returns the same accepted response as for a new request; the admin
+        # sees the duplicate in the logs.
+        logger.info("Registration request for an existing account: %s", normalized_email)
+        return None
 
     pending_user = User(
         full_name=clean_name,
@@ -848,24 +918,23 @@ def request_password_reset(
                 reset_url=reset_url,
             ),
         )
-    except EmailDeliveryError as exc:
+    except EmailDeliveryError:
+        # Swallowed on purpose: a 503 only for registered addresses was an
+        # account-existence oracle. The failure is in the server log.
         logger.warning(
             "Password reset email delivery failed for %s",
             user.email,
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Password reset delivery is currently unavailable.",
-        ) from exc
+        return {}
 
     if delivery.transport == "local":
-        result = {"delivery_mode": "local"}
-        if get_settings().MAIL_EXPOSE_LOCAL_RESET_LINKS:
-            result["local_reset_url"] = reset_url
         if delivery.artifact_path:
-            result["local_capture_path"] = delivery.artifact_path
-        return result
+            logger.info("Password reset email captured at %s", delivery.artifact_path)
+        # Dev-only convenience; the flag's own documentation says it exposes
+        # the link (and therefore account existence) on the local machine.
+        if get_settings().MAIL_EXPOSE_LOCAL_RESET_LINKS:
+            return {"local_reset_url": reset_url}
     return {}
 
 
@@ -1058,6 +1127,9 @@ def verify_operator_credentials(
 
     user = db.query(User).filter(User.email == normalized_email).first()
     if not user:
+        # Spend the same bcrypt work as a real account so response time does
+        # not reveal whether the email is registered.
+        verify_password(password_value, _dummy_password_hash())
         if is_ip_rate_limited(ip_address):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -1104,14 +1176,8 @@ def verify_operator_credentials(
 
     if not verify_password(password_value, user.password_hash):
         _record_user_failure(user)
-        remaining_attempts = get_remaining_login_attempts(user)
         is_locked = is_user_locked(user)
         retry_after_minutes = get_lockout_retry_minutes(user.lockout_until) if is_locked else None
-        warning_message = None
-        if not is_locked and remaining_attempts in {1, 2}:
-            warning_message = (
-                f"{remaining_attempts} attempt{'s' if remaining_attempts != 1 else ''} remaining before your account is locked"
-            )
         record_audit_event(
             db,
             operator_email=user.email,
@@ -1133,13 +1199,11 @@ def verify_operator_credentials(
                     remaining_attempts=0,
                 ),
             )
+        # Same body as the unknown-account branch: a remaining-attempts counter
+        # here told callers which emails are registered.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=build_login_error_detail(
-                message=LOGIN_FAILURE_MESSAGE,
-                remaining_attempts=remaining_attempts,
-                warning_message=warning_message,
-            ),
+            detail=build_login_error_detail(message=LOGIN_FAILURE_MESSAGE),
         )
 
     if user.status == USER_STATUS_PENDING:
@@ -1275,8 +1339,30 @@ def verify_two_factor_for_login(
     *,
     token: str | None,
     code: str,
+    ip_address: str | None = None,
 ) -> User:
+    """Second login step. Shares the password step's lockout and IP limiter.
+
+    Unthrottled, a 6-digit TOTP (three valid values per window) or a backup
+    code could simply be enumerated for the pending cookie's lifetime.
+    """
     user = resolve_pending_two_factor_user(db, token)
+    ip_value = ip_address or ""
+    if is_ip_rate_limited(ip_value):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=LOCKOUT_MESSAGE,
+        )
+    if is_user_locked(user):
+        retry_after_minutes = get_lockout_retry_minutes(user.lockout_until)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Too many failed attempts. Try again in {retry_after_minutes} "
+                f"minute{'s' if retry_after_minutes != 1 else ''}."
+            ),
+        )
+
     secret = decrypt_totp_secret(user.two_factor_secret)
     normalized_code = sanitize_text(code, max_length=32).upper().replace(" ", "")
     totp_valid = verify_totp_code(secret, normalized_code)
@@ -1284,14 +1370,34 @@ def verify_two_factor_for_login(
     if not totp_valid:
         backup_valid = consume_backup_code(user, normalized_code)
     if not totp_valid and not backup_valid:
+        _record_user_failure(user)
+        record_ip_failure(ip_value)
+        record_audit_event(
+            db,
+            operator_email=user.email,
+            event_type=AUDIT_LOGIN_FAILURE,
+            ip_address=ip_value or None,
+            detail="Login failed because the two-factor code was rejected.",
+        )
+        db.add(user)
+        db.commit()
+        if is_user_locked(user):
+            retry_after_minutes = get_lockout_retry_minutes(user.lockout_until)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Too many failed attempts. Try again in {retry_after_minutes} "
+                    f"minute{'s' if retry_after_minutes != 1 else ''}."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication code.",
         )
-    if backup_valid:
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    _reset_failed_login_state(user)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 

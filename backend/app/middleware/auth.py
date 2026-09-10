@@ -3,13 +3,17 @@ Authentication middleware for protected operator routes.
 """
 from __future__ import annotations
 
-from fastapi import Request, status
+import logging
+
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.db.connection import SessionLocal
 from app.services.auth import ACCESS_COOKIE_NAME, get_user_by_access_token
 from app.services.rbac import has_api_role_access
+
+logger = logging.getLogger(__name__)
 
 
 class OperatorAuthMiddleware(BaseHTTPMiddleware):
@@ -45,10 +49,16 @@ class OperatorAuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "Forbidden."}, status_code=status.HTTP_403_FORBIDDEN)
             request.state.user = user
             request.state.auth_claims = claims
-        except Exception as exc:
-            detail = getattr(exc, "detail", "Authentication required.")
-            status_code = getattr(exc, "status_code", status.HTTP_401_UNAUTHORIZED)
-            return JSONResponse({"detail": detail}, status_code=status_code)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        except Exception:
+            # A database error here used to come back as 401 "Authentication
+            # required", logging out an operator mid-shift with nothing logged.
+            logger.exception("Auth middleware could not resolve the session.")
+            return JSONResponse(
+                {"detail": "Service unavailable."},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         finally:
             db.close()
 
