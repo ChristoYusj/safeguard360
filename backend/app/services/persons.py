@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -560,6 +561,16 @@ def build_embedding_payload_from_media_items(
         existing_sample_count=len(existing_samples),
     )
     return payload, selected_thumbnail
+
+
+def purge_person_files(person_id: str) -> None:
+    """Delete the worker's on-disk folder (thumbnail, profile.json)."""
+    shutil.rmtree(_get_person_dir(person_id), ignore_errors=True)
+
+
+def purge_attendance_snapshots(record_ids: List[str]) -> None:
+    for record_id in record_ids:
+        shutil.rmtree(ATTENDANCE_SNAPSHOTS_DIR / record_id, ignore_errors=True)
 
 
 def write_person_thumbnail(person_id: str, image_bytes: bytes, mime_type: str) -> str:

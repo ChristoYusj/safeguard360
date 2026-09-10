@@ -3,8 +3,6 @@ Role-based access control helpers.
 """
 from __future__ import annotations
 
-from app.config.settings import get_settings
-
 
 ADMIN_ROLE = "admin"
 FLEET_OPERATOR_ROLE = "fleet_operator"
@@ -63,14 +61,21 @@ def get_role_label(role: str | None) -> str:
 
 
 def derive_legacy_role(role: str | None, email: str | None) -> str:
+    """Canonical role for a stored role/department value.
+
+    The stored role wins. Matching ADMIN_EMAIL used to force `admin` here on
+    every call, so a bootstrap admin an administrator had deliberately demoted
+    was reported (and re-written at the next restart) as admin. The bootstrap
+    account gets its role once, when it is seeded. ``email`` is kept for
+    call-site compatibility and no longer influences the result.
+    """
     normalized_role = normalize_user_role(role)
-    normalized_email = (email or "").strip().lower()
-    if normalized_email and normalized_email == (get_settings().ADMIN_EMAIL or "").strip().lower():
-        return ADMIN_ROLE
     if normalized_role in ALL_USER_ROLES:
         return normalized_role
 
     legacy = (role or "").strip().lower()
+    if "admin" in legacy:
+        return ADMIN_ROLE
     if "fleet" in legacy or "driver" in legacy or "transport" in legacy:
         return FLEET_OPERATOR_ROLE
     if "safety" in legacy or "attendance" in legacy or "security" in legacy:

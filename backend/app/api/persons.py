@@ -8,24 +8,57 @@ import io
 import json
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.connection import get_db
-from app.db.models import Person
+from app.db.models import Attendance, GateReview, Person, User
 from app.inference.face_recognizer import face_recognizer
+from app.services.audit import (
+    AUDIT_PERSON_DEACTIVATED,
+    AUDIT_PERSON_ENROLLED,
+    AUDIT_PERSON_PURGED,
+    AUDIT_PERSON_UPDATED,
+    AUDIT_ROSTER_IMPORTED,
+    record_audit_event,
+)
+from app.services.auth import get_client_ip
 from app.services.persons import (
     build_embedding_payload_from_image,
     build_embedding_payload_from_media_items,
     parse_embedding_payload,
     parse_image_data_url,
+    purge_attendance_snapshots,
+    purge_person_files,
     serialize_person,
     write_person_thumbnail,
     write_person_profile,
 )
 
 router = APIRouter()
+
+
+def _record_person_event(request: Request, db: Session, event_type: str, detail: str) -> None:
+    """Audit row for a change to the gate's allow-list (who may be recognised).
+
+    Enrollment, updates, deactivation and purges used to leave no trace of the
+    acting admin; the face templates decide who gets through the gate.
+    """
+    actor = getattr(request.state, "user", None)
+    if not isinstance(actor, User):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+    record_audit_event(
+        db,
+        operator_email=actor.email,
+        event_type=event_type,
+        ip_address=get_client_ip(request),
+        detail=detail,
+    )
+
+
+def _describe(person: Person) -> str:
+    return f"person {person.id} ({person.name!r}, employee_id={person.employee_id!r})"
 
 
 def _invalidate_gate_cache() -> None:
@@ -215,13 +248,18 @@ def get_recognizer_status():
 
 
 @router.post("", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
-def create_person(payload: PersonUpsertRequest, db: Session = Depends(get_db)):
+def create_person(payload: PersonUpsertRequest, request: Request, db: Session = Depends(get_db)):
     employee_id = payload.employee_id.strip() if payload.employee_id else None
     person = _create_person_record(
         db=db,
         name=payload.name,
         employee_id=employee_id,
         is_active=payload.is_active,
+    )
+    _record_person_event(
+        request, db, AUDIT_PERSON_ENROLLED,
+        f"Enrolled {_describe(person)} via JSON"
+        + (" with a face image." if payload.image_data_url else " without face data."),
     )
 
     if payload.image_data_url:
@@ -240,6 +278,7 @@ def create_person(payload: PersonUpsertRequest, db: Session = Depends(get_db)):
 
 @router.post("/enroll-media", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
 async def create_person_from_media(
+    request: Request,
     name: str = Form(...),
     employee_id: Optional[str] = Form(default=None),
     shift_id: Optional[str] = Form(default=None),
@@ -256,6 +295,10 @@ async def create_person_from_media(
         name=name,
         employee_id=cleaned_employee_id,
         is_active=is_active,
+    )
+    _record_person_event(
+        request, db, AUDIT_PERSON_ENROLLED,
+        f"Enrolled {_describe(person)} from {len(media_items)} uploaded media file(s).",
     )
 
     if media_items:
@@ -294,6 +337,7 @@ async def create_person_from_media(
 @router.post("/{person_id}/enroll-media", response_model=PersonResponse)
 async def update_person_from_media(
     person_id: str,
+    request: Request,
     name: str = Form(...),
     employee_id: Optional[str] = Form(default=None),
     shift_id: Optional[str] = Form(default=None),
@@ -304,6 +348,10 @@ async def update_person_from_media(
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found.")
+    _record_person_event(
+        request, db, AUDIT_PERSON_UPDATED,
+        f"Updated face data for {_describe(person)} (merge_mode={merge_mode}).",
+    )
 
     cleaned_name = name.strip()
     if not cleaned_name:
@@ -366,6 +414,7 @@ async def update_person_from_media(
 def update_person(
     person_id: str,
     payload: PersonUpsertRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     person = db.query(Person).filter(Person.id == person_id).first()
@@ -380,6 +429,12 @@ def update_person(
             detail=f"Employee ID '{employee_id}' is already enrolled.",
         )
 
+    _record_person_event(
+        request, db, AUDIT_PERSON_UPDATED,
+        f"Updated {_describe(person)}: name={payload.name.strip()!r}, employee_id={employee_id!r}, "
+        f"is_active={payload.is_active}, shift_id={payload.shift_id!r}"
+        + (", new face image" if payload.image_data_url else "") + ".",
+    )
     person.name = payload.name.strip()
     person.employee_id = employee_id
     person.is_active = payload.is_active
@@ -444,6 +499,7 @@ class BulkImportSummary(BaseModel):
 
 @router.post("/bulk-import", response_model=BulkImportSummary)
 async def bulk_import_persons(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -567,6 +623,11 @@ async def bulk_import_persons(
             errors.append({"line": index, "reason": str(exc)[:200]})
             continue
 
+    _record_person_event(
+        request, db, AUDIT_ROSTER_IMPORTED,
+        f"Roster CSV import: {created} created, {updated} updated, {reactivated} reactivated, "
+        f"{skipped} skipped of {total_rows} rows.",
+    )
     db.commit()
     _invalidate_gate_cache()
     return BulkImportSummary(
@@ -580,12 +641,56 @@ async def bulk_import_persons(
 
 
 @router.delete("/{person_id}", response_model=PersonResponse)
-def deactivate_person(person_id: str, db: Session = Depends(get_db)):
+def deactivate_person(
+    person_id: str,
+    request: Request,
+    purge: bool = Query(
+        default=False,
+        description="Also erase face templates, photos, snapshots and the worker's name.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Deactivate a worker; with ?purge=true, erase their personal data.
+
+    Deactivation alone keeps the biometric template and photos on disk (they
+    were still retrievable through include_inactive). Purge is the erasure
+    path: the ArcFace vectors, thumbnail, profile and attendance snapshots are
+    deleted, and the name on the person row, attendance rows and gate reviews
+    is replaced by a placeholder. Operational records (that an entry/exit
+    happened, when, with what PPE result) are kept.
+    """
     person = db.query(Person).filter(Person.id == person_id).first()
     if not person:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found.")
 
+    description = _describe(person)
     person.is_active = False
+    if purge:
+        placeholder = f"Removed worker {person.id[:8]}"
+        record_ids = [
+            record_id
+            for (record_id,) in db.query(Attendance.id).filter(Attendance.person_id == person.id).all()
+        ]
+        db.query(Attendance).filter(Attendance.person_id == person.id).update(
+            {"person_name": placeholder, "snapshot_path": None}, synchronize_session=False
+        )
+        db.query(GateReview).filter(GateReview.person_id == person.id).update(
+            {"person_name": placeholder, "snapshot_path": None}, synchronize_session=False
+        )
+        person.embedding = None
+        person.thumbnail_path = None
+        person.name = placeholder
+        person.employee_id = None
+        purge_person_files(person.id)
+        purge_attendance_snapshots(record_ids)
+        _record_person_event(
+            request, db, AUDIT_PERSON_PURGED,
+            f"Purged {description}: face templates, photos, profile, {len(record_ids)} attendance "
+            "snapshot folder(s) and the name were erased.",
+        )
+    else:
+        _record_person_event(request, db, AUDIT_PERSON_DEACTIVATED, f"Deactivated {description}.")
+
     db.commit()
     db.refresh(person)
     _invalidate_gate_cache()
