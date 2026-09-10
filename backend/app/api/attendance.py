@@ -25,7 +25,6 @@ from app.services.gate_compliance import (
     ppe_reason_messages,
     serialize_gate_policy,
     serialize_ppe_details,
-    serialize_review_reasons,
 )
 
 router = APIRouter()

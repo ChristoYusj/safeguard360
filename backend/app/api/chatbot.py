@@ -67,12 +67,12 @@ def get_context(db: Session = Depends(get_db)):
     """
     try:
         ctx = build_site_context(db)
-    except Exception:
+    except Exception as exc:
         logger.exception("Chatbot: context build failed.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not build site context.",
-        )
+        ) from exc
     return {
         "generated_at": ctx.generated_at,
         "on_site_count": ctx.on_site_count,
@@ -103,11 +103,11 @@ def post_message(payload: ChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
-        )
+        ) from exc
     except ChatbotError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
-        )
+        ) from exc
 
     return result

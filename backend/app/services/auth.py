@@ -32,7 +32,6 @@ from app.services.audit import (
     AUDIT_ACCOUNT_REJECTED,
     AUDIT_LOGIN_FAILURE,
     AUDIT_LOGIN_SUCCESS,
-    AUDIT_LOGOUT,
     AUDIT_PASSWORD_CHANGE,
     AUDIT_TWO_FACTOR_DISABLED,
     AUDIT_TWO_FACTOR_ENABLED,
@@ -42,7 +41,6 @@ from app.services.email import EmailDeliveryError, send_transactional_email
 from app.services.rbac import (
     ADMIN_ROLE,
     ALL_USER_STATUSES,
-    SELF_SERVICE_REGISTRATION_ROLES,
     USER_STATUS_ACTIVE,
     USER_STATUS_PENDING,
     USER_STATUS_REJECTED,

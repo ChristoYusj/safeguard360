@@ -1,0 +1,20 @@
+# Ruff configuration for the backend.
+#
+# Deliberately narrow: correctness rules only (pyflakes, pycodestyle errors,
+# bugbear). Style/modernisation rule sets (I, UP, SIM, …) are not enabled so
+# that lint failures always point at a real defect, not a formatting opinion.
+# Widen this once the codebase is clean under the current set.
+
+target-version = "py310"
+line-length = 100
+extend-exclude = [".venv", "frontend", "data", "node_modules"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    "B008",  # function calls in argument defaults — FastAPI's Depends()/Query() idiom
+]
+
+[lint.per-file-ignores]
+# conftest sets environment variables before importing the app on purpose.
+"backend/tests/conftest.py" = ["E402"]

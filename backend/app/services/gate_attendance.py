@@ -12,8 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
-
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
 from app.db.connection import SessionLocal
@@ -39,6 +38,8 @@ from app.services.persons import (
     parse_embedding_payload,
     write_attendance_snapshot,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
