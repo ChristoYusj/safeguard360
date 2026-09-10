@@ -6,12 +6,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api._admin_helpers import get_admin_user
 from app.db.connection import get_db
-from app.db.models import Alert, Attendance, Event, GateReview, Person
+from app.db.models import Alert, Attendance, Event, GateReview, Person, User
+from app.services.audit import (
+    AUDIT_ATTENDANCE_CLEARED,
+    AUDIT_ATTENDANCE_MANUAL_ENTRY,
+    record_audit_event,
+)
+from app.services.auth import get_client_ip
 from app.services.persons import (
     parse_image_data_url,
     read_image_data_url,
@@ -36,12 +43,13 @@ class AttendanceCreateRequest(BaseModel):
     direction: Literal["ENTRY", "EXIT"] = "ENTRY"
     ppe_compliant: bool = True
     access_granted: bool = True
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     snapshot_data_url: Optional[str] = None
     ppe_details: Optional[Dict[str, Any]] = None
     camera_source_type: Optional[str] = None
     camera_source_id: Optional[str] = None
-    log_method: Optional[Literal["AUTO", "MANUAL"]] = None
+    # `confidence` and `log_method` are deliberately not accepted: a manual
+    # entry is always log_method="MANUAL" with no recogniser confidence, so it
+    # can never be made to look like a face-recognition scan.
 
 
 class AttendanceResponse(BaseModel):
@@ -82,8 +90,19 @@ class GateReviewResponse(BaseModel):
 
 class GateReviewDecisionRequest(BaseModel):
     decision: Literal["APPROVED", "DENIED"]
-    decided_by: Optional[str] = Field(default=None, max_length=100)
+    # Attribution comes from the authenticated session, never from the body.
     note: Optional[str] = Field(default=None, max_length=500)
+
+
+def _require_operator(request: Request) -> User:
+    """The authenticated operator the middleware attached to the request."""
+    current_user = getattr(request.state, "user", None)
+    if not isinstance(current_user, User):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+        )
+    return current_user
 
 
 class GateDirectionModeRequest(BaseModel):
@@ -260,8 +279,10 @@ def list_attendance(
 @router.post("", response_model=AttendanceResponse, status_code=status.HTTP_201_CREATED)
 def create_attendance_record(
     payload: AttendanceCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    operator = _require_operator(request)
     person = None
     if payload.person_id:
         person = db.query(Person).filter(Person.id == payload.person_id).first()
@@ -285,12 +306,23 @@ def create_attendance_record(
         direction=payload.direction,
         ppe_compliant=payload.ppe_compliant,
         access_granted=payload.access_granted,
-        confidence=payload.confidence,
+        confidence=None,
         snapshot_data_url=payload.snapshot_data_url,
         ppe_details=payload.ppe_details,
         camera_source_type=payload.camera_source_type,
         camera_source_id=payload.camera_source_id,
-        log_method=payload.log_method or "MANUAL",
+        log_method="MANUAL",
+    )
+    db.flush()
+    record_audit_event(
+        db,
+        operator_email=operator.email,
+        event_type=AUDIT_ATTENDANCE_MANUAL_ENTRY,
+        ip_address=get_client_ip(request),
+        detail=(
+            f"Manual {payload.direction} recorded for {resolved_name} "
+            f"(attendance {record.id}, access_granted={payload.access_granted})."
+        ),
     )
 
     db.commit()
@@ -305,7 +337,10 @@ def create_attendance_record(
 
 
 @router.delete("/logs", response_model=AttendanceLogClearResponse)
-def clear_attendance_logs(db: Session = Depends(get_db)):
+def clear_attendance_logs(request: Request, db: Session = Depends(get_db)):
+    # Destroys the attendance history, every pending review and all PPE
+    # alerts: admin only, and the wipe itself is written to the audit log.
+    admin_user = get_admin_user(request, db)
     ppe_event_ids = [
         event_id
         for (event_id,) in db.query(Event.id).filter(Event.category == "PPE").all()
@@ -324,6 +359,16 @@ def clear_attendance_logs(db: Session = Depends(get_db)):
         db.query(Event)
         .filter(Event.category == "PPE")
         .delete(synchronize_session=False)
+    )
+    record_audit_event(
+        db,
+        operator_email=admin_user.email,
+        event_type=AUDIT_ATTENDANCE_CLEARED,
+        ip_address=get_client_ip(request),
+        detail=(
+            f"Cleared {attendance_deleted} attendance records, {reviews_deleted} gate "
+            f"reviews, {ppe_events_deleted} PPE events and {alerts_deleted} alerts."
+        ),
     )
 
     db.commit()
@@ -394,8 +439,10 @@ def list_gate_reviews(
 def decide_gate_review(
     review_id: str,
     payload: GateReviewDecisionRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    operator = _require_operator(request)
     review = db.query(GateReview).filter(GateReview.id == review_id).first()
     if not review:
         raise HTTPException(
@@ -411,7 +458,7 @@ def decide_gate_review(
 
     review.status = payload.decision
     review.decided_at = datetime.now()
-    review.decided_by = payload.decided_by.strip() if payload.decided_by else "Authorized operator"
+    review.decided_by = operator.email
     review.decision_note = payload.note.strip() if payload.note else None
     review_reasons = normalize_review_reasons(review.review_reasons)
     ppe_details = normalize_ppe_details(review.ppe_details)

@@ -708,28 +708,35 @@ def backfill_user_roles(db: Session) -> None:
             db.add(user)
 
 
+def _configured_link_origin(value: str, setting_name: str) -> str:
+    configured_url = sanitize_text(value, max_length=2048)
+    if not configured_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{setting_name} is not configured.",
+        )
+    return configured_url.rstrip("/")
+
+
 def build_public_app_base_url(request: Request) -> str:
-    configured_url = sanitize_text(get_settings().FRONTEND_APP_URL, max_length=2048)
-    if configured_url:
-        return configured_url.rstrip("/")
+    """Origin for links placed in outgoing email.
 
-    origin = sanitize_text(request.headers.get("origin"), max_length=2048)
-    if origin:
-        return origin.rstrip("/")
-
-    referer = sanitize_text(request.headers.get("referer"), max_length=2048)
-    if referer:
-        trimmed = referer.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-        if trimmed:
-            return trimmed.rsplit("/", 1)[0] if "/auth/" in trimmed else trimmed
-
-    return str(request.base_url).rstrip("/")
+    Always the configured FRONTEND_APP_URL. It used to fall back to the
+    request's Origin, Referer and Host headers, all of which the sender of the
+    request controls: a forged header put a live password-reset token into a
+    URL on the attacker's domain. ``request`` is kept for call-site
+    compatibility and deliberately unused.
+    """
+    return _configured_link_origin(get_settings().FRONTEND_APP_URL, "FRONTEND_APP_URL")
 
 
 def build_approval_urls(request: Request, user: User) -> tuple[str, str]:
     approve_token = create_approval_token(user, "approve")
     reject_token = create_approval_token(user, "reject")
-    base_url = str(request.base_url).rstrip("/")
+    # Never request.base_url (the Host header); see build_public_app_base_url.
+    base_url = _configured_link_origin(
+        get_settings().resolved_public_api_base_url, "FRONTEND_APP_URL"
+    )
     return (
         f"{base_url}/api/auth/approval/approve?token={approve_token}",
         f"{base_url}/api/auth/approval/reject?token={reject_token}",

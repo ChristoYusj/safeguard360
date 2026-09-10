@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 from app.api._admin_helpers import get_admin_user
 from app.db.connection import get_db
 from app.db.models import AuditLog
-from app.services.audit import ALL_AUDIT_EVENT_TYPES
+from app.services.audit import (
+    ALL_AUDIT_EVENT_TYPES,
+    AUDIT_AUDIT_LOG_CLEARED,
+    record_audit_event,
+)
+from app.services.auth import get_client_ip
 
 
 router = APIRouter()
@@ -77,8 +82,17 @@ def clear_audit_logs(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    get_admin_user(request, db)
+    admin_user = get_admin_user(request, db)
     deleted_count = db.query(AuditLog).delete()
+    # Written after the delete, in the same transaction, so the wipe is the
+    # first entry of the new log instead of an untraceable gap.
+    record_audit_event(
+        db,
+        operator_email=admin_user.email,
+        event_type=AUDIT_AUDIT_LOG_CLEARED,
+        ip_address=get_client_ip(request),
+        detail=f"Cleared {deleted_count} audit log entries.",
+    )
     db.commit()
     return {
         "success": True,
