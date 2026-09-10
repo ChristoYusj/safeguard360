@@ -6,6 +6,8 @@ or type limits; malformed data URLs and CSVs surfaced as 500s.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.camera.manager import camera_manager
@@ -40,7 +42,9 @@ def _start(client, source_type: str, source_id: str):
 @pytest.mark.parametrize(
     "source_type,source_id,fragment",
     [
-        ("video_file", "C:/Windows/win.ini", "inside"),
+        # An existing absolute file outside VIDEO_SOURCES_DIR on every OS (a
+        # Windows-only path is relative on Linux and lands inside the dir).
+        ("video_file", str(Path(__file__).resolve()), "inside"),
         ("video_file", "../../backend/main.py", "inside"),
         ("ip_stream", "http://169.254.169.254/latest/meta-data/", "routable"),
         ("ip_stream", "http://127.0.0.1:8000/api/auth/me", "routable"),
