@@ -2,8 +2,11 @@
 FastAPI Application Factory
 """
 import asyncio
+import contextlib
 import logging
 import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -82,6 +85,26 @@ async def frame_broadcaster():
             await asyncio.sleep(1)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Own the process-level resources for the app's lifetime.
+
+    Startup: create/migrate the database, then start the frame broadcaster.
+    Shutdown: cancel the broadcaster and release the camera. Running this from
+    the lifespan (rather than on_event hooks) means TestClient exercises the
+    same startup and teardown the real server does.
+    """
+    init_db()
+    broadcaster = asyncio.create_task(frame_broadcaster())
+    try:
+        yield
+    finally:
+        broadcaster.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await broadcaster
+        camera_manager.stop()
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
@@ -99,6 +122,7 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
         openapi_url="/openapi.json" if settings.DEBUG else None,
+        lifespan=lifespan,
     )
 
     app.add_middleware(OperatorAuthMiddleware)
@@ -117,15 +141,5 @@ def create_app() -> FastAPI:
     
     # Setup WebSocket
     setup_websocket(app)
-    
-    @app.on_event("startup")
-    async def startup():
-        init_db()
-        # Start frame broadcaster
-        asyncio.create_task(frame_broadcaster())
-    
-    @app.on_event("shutdown")
-    async def shutdown():
-        camera_manager.stop()
-    
+
     return app

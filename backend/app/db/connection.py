@@ -1,10 +1,14 @@
 """
 Database Connection
 """
+import threading
 from pathlib import Path
+from typing import Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config.settings import get_settings
 from app.db.models import Base
@@ -12,8 +16,14 @@ from app.services.gate_compliance import get_or_create_gate_policy
 from app.services.auth import backfill_user_roles, seed_bootstrap_operator
 
 
-# Create engine
-settings = get_settings()
+# The engine is built on first use (or explicitly via configure_database),
+# not at import time, so importing the app never touches the filesystem and
+# tests can point the whole process at an in-memory database.
+_engine: Optional[Engine] = None
+_session_factory: Optional[sessionmaker] = None
+_engine_url: str = ""
+_engine_lock = threading.Lock()
+
 
 def _ensure_sqlite_directory(database_url: str) -> None:
     if not database_url.startswith("sqlite:///"):
@@ -27,15 +37,88 @@ def _ensure_sqlite_directory(database_url: str) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
 
-resolved_database_url = settings.resolved_database_url
-_ensure_sqlite_directory(resolved_database_url)
+def _is_memory_sqlite(url: str) -> bool:
+    return url in ("sqlite://", "sqlite:///:memory:")
 
-engine = create_engine(
-    resolved_database_url,
-    connect_args={"check_same_thread": False}  # SQLite specific
-)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def _build_engine(url: str) -> Engine:
+    _ensure_sqlite_directory(url)
+    connect_args: dict = {}
+    engine_kwargs: dict = {}
+    if url.startswith("sqlite"):
+        # Sessions are opened from request threads, camera worker threads and
+        # the asyncio broadcaster, so SQLite's per-thread check must be off.
+        connect_args["check_same_thread"] = False
+        if _is_memory_sqlite(url):
+            # One shared connection, otherwise every thread gets its own
+            # empty in-memory database.
+            engine_kwargs["poolclass"] = StaticPool
+    engine = create_engine(url, connect_args=connect_args, **engine_kwargs)
+
+    if url.startswith("sqlite"):
+
+        @event.listens_for(engine, "connect")
+        def _sqlite_pragmas(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            # Wait for a writer (the gate thread) instead of failing with
+            # "database is locked".
+            cursor.execute("PRAGMA busy_timeout=5000")
+            # Readers proceed while a writer commits. No-op for :memory:.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+    return engine
+
+
+def _configure_locked(url: Optional[str]) -> Engine:
+    global _engine, _session_factory, _engine_url
+    if _engine is not None:
+        _engine.dispose()
+    _engine_url = url or get_settings().resolved_database_url
+    _engine = _build_engine(_engine_url)
+    _session_factory = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+    return _engine
+
+
+def configure_database(url: Optional[str] = None) -> Engine:
+    """(Re)build the engine, disposing any existing one.
+
+    Called implicitly on first use with the configured DATABASE_URL; tests call
+    it explicitly with ``sqlite:///:memory:`` before creating the app.
+    """
+    with _engine_lock:
+        return _configure_locked(url)
+
+
+def get_engine() -> Engine:
+    with _engine_lock:
+        if _engine is None:
+            _configure_locked(None)
+        return _engine
+
+
+def get_sessionmaker() -> sessionmaker:
+    get_engine()
+    return _session_factory
+
+
+def _current_url() -> str:
+    get_engine()
+    return _engine_url
+
+
+class _SessionFactoryProxy:
+    """Callable stand-in for the sessionmaker.
+
+    Keeps ``from app.db.connection import SessionLocal`` and ``SessionLocal()``
+    working unchanged at every call site while the engine is created lazily.
+    """
+
+    def __call__(self, **kwargs) -> Session:
+        return get_sessionmaker()(**kwargs)
+
+
+SessionLocal = _SessionFactoryProxy()
 
 
 SQLITE_ADDITIVE_MIGRATIONS = {
@@ -89,7 +172,7 @@ SQLITE_REDUNDANT_INDEXES = (
 
 
 def _is_sqlite_engine() -> bool:
-    return str(resolved_database_url).startswith("sqlite")
+    return _current_url().startswith("sqlite")
 
 
 def _get_table_columns(connection, table_name: str) -> set[str]:
@@ -101,7 +184,7 @@ def _apply_sqlite_additive_migrations() -> None:
     if not _is_sqlite_engine():
         return
 
-    with engine.begin() as connection:
+    with get_engine().begin() as connection:
         for table_name, columns in SQLITE_ADDITIVE_MIGRATIONS.items():
             table_exists = connection.execute(
                 text(
@@ -126,7 +209,7 @@ def _apply_sqlite_index_migrations() -> None:
     if not _is_sqlite_engine():
         return
 
-    with engine.begin() as connection:
+    with get_engine().begin() as connection:
         for table_name, indexes in SQLITE_INDEX_MIGRATIONS.items():
             table_exists = connection.execute(
                 text(
@@ -189,7 +272,7 @@ def _backfill_person_shift_ids() -> None:
 
 def init_db():
     """Create all database tables."""
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())
     _apply_sqlite_additive_migrations()
     _apply_sqlite_index_migrations()
     _backfill_person_shift_ids()

@@ -21,12 +21,43 @@ os.environ.setdefault("TOTP_ENCRYPTION_KEY", "0" * 44)
 # Hard-set, not setdefault: a DATABASE_URL exported in the developer's shell
 # must never make the suite touch a real database.
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+# create_app() refuses to start without these; the bootstrap admin they seed is
+# what the HTTP fixtures log in as.
+os.environ.setdefault("ADMIN_EMAIL", "admin@example.com")
+os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "Bootstrap-Passw0rd!2026")
+os.environ.setdefault("FRONTEND_APP_URL", "http://testserver")
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base
+
+TEST_ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+TEST_ADMIN_PASSWORD = os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
+
+
+@pytest.fixture()
+def client():
+    """A TestClient over the real app on a fresh in-memory database.
+
+    configure_database swaps the process-wide engine for a StaticPool
+    in-memory one, so the middleware, gate service and websocket code (which
+    call SessionLocal() directly) all see the same tables the test does.
+    Entering the client runs the lifespan: init_db seeds the gate policy and the
+    bootstrap admin from the environment above.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.db import connection
+    from app.factory import create_app
+
+    connection.configure_database("sqlite:///:memory:")
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    # Leave a fresh, empty engine behind so state never leaks into the next test.
+    connection.configure_database("sqlite:///:memory:")
 
 
 @pytest.fixture()
