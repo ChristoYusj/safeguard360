@@ -756,11 +756,6 @@ def backfill_user_roles(db: Session) -> None:
             user.role = normalized_role
             dirty = True
 
-        if user.email and user.email.strip().lower() == (get_settings().ADMIN_EMAIL or "").strip().lower():
-            if user.role_department != "Admin":
-                user.role_department = "Admin"
-                dirty = True
-
         if normalized_status not in ALL_USER_STATUSES:
             user.status = USER_STATUS_ACTIVE
             dirty = True
@@ -1040,13 +1035,18 @@ def change_password_for_user(
     db.refresh(user)
 
 
-def resolve_registration_decision(
+def load_pending_user_for_decision(
     db: Session,
     *,
     token: str,
     expected_action: str,
-    ip_address: str | None = None,
-) -> tuple[User, str]:
+) -> User:
+    """Validate an approval token and return its pending user WITHOUT acting.
+
+    Used by the confirmation page an emailed link opens. The decision itself
+    is applied only by resolve_registration_decision on a POST, so a mail
+    scanner or link preview that follows the GET cannot approve an account.
+    """
     try:
         payload = decode_approval_token(token)
     except jwt.PyJWTError as exc:
@@ -1080,6 +1080,17 @@ def resolve_registration_decision(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This approval link is invalid or expired.",
         )
+    return user
+
+
+def resolve_registration_decision(
+    db: Session,
+    *,
+    token: str,
+    expected_action: str,
+    ip_address: str | None = None,
+) -> tuple[User, str]:
+    user = load_pending_user_for_decision(db, token=token, expected_action=expected_action)
 
     user.status = USER_STATUS_ACTIVE if expected_action == "approve" else USER_STATUS_REJECTED
     user.approval_token_version = (user.approval_token_version or 0) + 1

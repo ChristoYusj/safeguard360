@@ -16,9 +16,11 @@ from app.db.models import Alert, Attendance, Event, GateReview, Person, User
 from app.services.audit import (
     AUDIT_ATTENDANCE_CLEARED,
     AUDIT_ATTENDANCE_MANUAL_ENTRY,
+    AUDIT_PPE_POLICY_CHANGED,
     record_audit_event,
 )
 from app.services.auth import get_client_ip
+from app.services.rbac import ADMIN_ROLE, GENERAL_MANAGER_ROLE
 from app.services.persons import (
     parse_image_data_url,
     read_image_data_url,
@@ -402,9 +404,17 @@ def get_ppe_policy(db: Session = Depends(get_db)):
 @router.put("/ppe-policy", response_model=PpePolicyResponse)
 def update_ppe_policy(
     payload: PpePolicyUpdateRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    # The policy is the safety control operators are subject to; only roles
+    # that manage the site may relax or tighten it, and every change is logged.
+    operator = _require_operator(request)
+    if operator.role not in {ADMIN_ROLE, GENERAL_MANAGER_ROLE}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden.")
+
     policy = get_or_create_gate_policy(db)
+    before = serialize_gate_policy(policy)
 
     if payload.require_helmet is not None:
         policy.require_helmet = payload.require_helmet
@@ -412,6 +422,19 @@ def update_ppe_policy(
         policy.require_vest = payload.require_vest
     if payload.deny_non_compliant_entry is not None:
         policy.deny_non_compliant_entry = payload.deny_non_compliant_entry
+
+    after = serialize_gate_policy(policy)
+    changes = {k: (before.get(k), after.get(k)) for k in after if before.get(k) != after.get(k)}
+    if changes:
+        record_audit_event(
+            db,
+            operator_email=operator.email,
+            event_type=AUDIT_PPE_POLICY_CHANGED,
+            ip_address=get_client_ip(request),
+            detail="PPE policy changed: "
+            + "; ".join(f"{k} {old} -> {new}" for k, (old, new) in changes.items())
+            + ".",
+        )
 
     db.commit()
     db.refresh(policy)

@@ -24,6 +24,7 @@ import {
   stopCamera,
   updateAttendancePpePolicy,
 } from "../services/api";
+import { canChangePpePolicy } from "../utils/accessControl";
 import {
   AlertTriangleIcon,
   CameraIcon,
@@ -613,6 +614,7 @@ function StatCard({ icon: Icon, label, value, helper, tone = "accent" }) {
 function Attendance() {
   const { user } = useAuth();
   const { t } = useAppLanguage();
+  const canEditPpePolicy = canChangePpePolicy(user?.role);
   const [selectedShiftId, setSelectedShiftId] = useState("day");
   const [cameraState, setCameraState] = useState(null);
   const [sources, setSources] = useState([]);
@@ -1484,7 +1486,7 @@ function Attendance() {
   };
 
   const handleChangePpeMode = async (nextMode) => {
-    if (nextMode === ppeMode || isChangingPpePolicy) return;
+    if (nextMode === ppeMode || isChangingPpePolicy || !canEditPpePolicy) return;
     let nextPolicy;
     if (nextMode === "off") {
       nextPolicy = {
@@ -2212,6 +2214,11 @@ function Attendance() {
                 {/* Mode selector */}
                 <div>
                   <p className="eyebrow mb-3">Operating Mode</p>
+                  {canEditPpePolicy ? null : (
+                    <p className="mb-3 text-xs text-secondary">
+                      Set by an administrator or general manager. Changes are recorded in the audit log.
+                    </p>
+                  )}
                   <div className="flex flex-col gap-2">
                     {[
                       {
@@ -2235,7 +2242,8 @@ function Attendance() {
                         <button
                           key={option.id}
                           type="button"
-                          disabled={isChangingPpePolicy}
+                          disabled={isChangingPpePolicy || !canEditPpePolicy}
+                          aria-disabled={!canEditPpePolicy}
                           onClick={() => handleChangePpeMode(option.id)}
                           className={`rounded-xl border px-4 py-3 text-left transition ${
                             active

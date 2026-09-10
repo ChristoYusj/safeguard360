@@ -72,6 +72,12 @@ export function canAccessChatbot(role) {
   return role === ROLES.ADMIN || role === ROLES.GENERAL_MANAGER;
 }
 
+// Mirrors backend/app/api/attendance.py update_ppe_policy: switching PPE
+// enforcement off is a management decision, not a shift-floor one.
+export function canChangePpePolicy(role) {
+  return role === ROLES.ADMIN || role === ROLES.GENERAL_MANAGER;
+}
+
 export function canAccessPath(role, path) {
   if (!role) {
     return false;

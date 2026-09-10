@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from html import escape
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy.orm import Session
@@ -25,6 +25,7 @@ from app.services.auth import (
     enable_two_factor,
     get_client_ip,
     issue_login_tokens,
+    load_pending_user_for_decision,
     record_login_success,
     request_password_reset,
     register_pending_operator,
@@ -618,43 +619,83 @@ def disable_two_factor_auth(
     }
 
 
-@router.get("/approval/approve", response_class=HTMLResponse)
-def approve_registration(
-    request: Request,
-    token: str = Query(...),
-    db: Session = Depends(get_db),
-):
+def _build_approval_confirm_html(*, user: User, action: str, token: str) -> str:
+    """The page an emailed approve/reject link opens.
+
+    Nothing happens on the GET: the decision is submitted with the button
+    below, so mail scanners and link previews that fetch the URL cannot act.
+    """
+    approving = action == "approve"
+    role = get_role_label(user.role or user.role_department)
+    verb = "Approve" if approving else "Reject"
+    tone = "#22c55e" if approving else "#ef4444"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Confirm {escape(verb.lower())} - SafeGuard 360</title>
+    <style>
+      body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #071014; color: #f8fafc; }}
+      .card {{ width: min(520px, calc(100% - 36px)); border: 1px solid rgba(148,163,184,.22); border-radius: 20px; padding: 28px; background: rgba(18,29,42,.92); }}
+      h1 {{ margin: 0 0 8px; font-size: 22px; }}
+      p {{ color: #cbd5e1; line-height: 1.6; }}
+      dl {{ display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 18px 0; }}
+      dt {{ color: #9ca3af; }}
+      button {{ font: inherit; padding: 12px 20px; border: 0; border-radius: 10px; background: {tone}; color: #fff; cursor: pointer; }}
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>{escape(verb)} this access request?</h1>
+      <p>Review the request, then confirm. Opening this page has not changed anything yet.</p>
+      <dl>
+        <dt>Name</dt><dd>{escape(user.full_name or "Operator")}</dd>
+        <dt>Email</dt><dd>{escape(user.email or "")}</dd>
+        <dt>Requested role</dt><dd>{escape(role)}</dd>
+      </dl>
+      <form method="post" action="">
+        <input type="hidden" name="token" value="{escape(token, quote=True)}" />
+        <button type="submit">{escape(verb)} request</button>
+      </form>
+    </main>
+  </body>
+</html>"""
+
+
+def _confirm_page(db: Session, *, action: str, token: str) -> HTMLResponse:
+    user = load_pending_user_for_decision(db, token=token, expected_action=action)
+    return HTMLResponse(_build_approval_confirm_html(user=user, action=action, token=token))
+
+
+def _apply_decision(request: Request, db: Session, *, action: str, token: str) -> HTMLResponse:
     user, message = resolve_registration_decision(
         db=db,
         token=token,
-        expected_action="approve",
+        expected_action=action,
         ip_address=get_client_ip(request),
     )
     return HTMLResponse(
-        _build_approval_result_html(
-            user=user,
-            message=message,
-            approved=True,
-        )
+        _build_approval_result_html(user=user, message=message, approved=(action == "approve"))
     )
+
+
+@router.get("/approval/approve", response_class=HTMLResponse)
+def approve_registration_confirm(token: str = Query(...), db: Session = Depends(get_db)):
+    return _confirm_page(db, action="approve", token=token)
+
+
+@router.post("/approval/approve", response_class=HTMLResponse)
+def approve_registration(request: Request, token: str = Form(...), db: Session = Depends(get_db)):
+    return _apply_decision(request, db, action="approve", token=token)
 
 
 @router.get("/approval/reject", response_class=HTMLResponse)
-def reject_registration(
-    request: Request,
-    token: str = Query(...),
-    db: Session = Depends(get_db),
-):
-    user, message = resolve_registration_decision(
-        db=db,
-        token=token,
-        expected_action="reject",
-        ip_address=get_client_ip(request),
-    )
-    return HTMLResponse(
-        _build_approval_result_html(
-            user=user,
-            message=message,
-            approved=False,
-        )
-    )
+def reject_registration_confirm(token: str = Query(...), db: Session = Depends(get_db)):
+    return _confirm_page(db, action="reject", token=token)
+
+
+@router.post("/approval/reject", response_class=HTMLResponse)
+def reject_registration(request: Request, token: str = Form(...), db: Session = Depends(get_db)):
+    return _apply_decision(request, db, action="reject", token=token)
