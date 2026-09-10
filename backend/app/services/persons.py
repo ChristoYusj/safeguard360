@@ -90,17 +90,24 @@ def write_person_profile(person_id: str, profile: Optional[Dict[str, Any]] = Non
 
 
 def parse_image_data_url(data_url: str) -> Tuple[bytes, str]:
-    """Decode a data URL into raw bytes and a MIME type."""
+    """Decode a data URL into raw bytes and a MIME type.
+
+    Raises ValueError (only) for anything malformed, so callers can map it to
+    a 400 without also having to catch the IndexError a missing "data:"
+    prefix used to produce.
+    """
     if not data_url or "," not in data_url:
         raise ValueError("Expected a valid image data URL.")
 
     header, encoded = data_url.split(",", 1)
-    if ";base64" not in header:
-        raise ValueError("Image data URL must be base64-encoded.")
+    if not header.startswith("data:") or ";base64" not in header:
+        raise ValueError("Image data URL must look like data:image/<type>;base64,<data>.")
 
-    mime_type = header.split(":", 1)[1].split(";", 1)[0]
+    mime_type = header[len("data:"):].split(";", 1)[0].strip().lower()
+    if not mime_type.startswith("image/"):
+        raise ValueError("Image data URL must carry an image/* MIME type.")
     try:
-        image_bytes = base64.b64decode(encoded)
+        image_bytes = base64.b64decode(encoded, validate=True)
     except Exception as exc:
         raise ValueError("Image data URL could not be decoded.") from exc
 

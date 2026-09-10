@@ -3,14 +3,18 @@ Camera API Endpoints
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Literal, Optional
+from urllib.parse import urlsplit
 
 import cv2
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.camera.manager import camera_manager
+from app.config.settings import get_settings
 from app.services.rbac import ADMIN_ROLE, FLEET_OPERATOR_ROLE, GENERAL_MANAGER_ROLE, SAFETY_OPERATOR_ROLE
 
 router = APIRouter()
@@ -18,10 +22,78 @@ logger = logging.getLogger(__name__)
 
 
 class CameraStartRequest(BaseModel):
-    source_type: str = "webcam"
-    source_id: Optional[str] = "0"
+    source_type: Literal["webcam", "video_file", "ip_stream"] = "webcam"
+    source_id: Optional[str] = Field(default="0", max_length=2048)
     owner_module: Optional[str] = None
     owner_token: Optional[str] = None
+
+
+STREAM_SCHEMES = {"rtsp", "rtsps", "http", "https"}
+
+
+def _reject(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=detail)
+
+
+def validate_camera_source(source_type: str, source_id: str) -> str:
+    """Return a safe source_id for cv2.VideoCapture or raise 400.
+
+    The raw value used to go straight into VideoCapture, which accepts any
+    local path or URL: an operator could stream an arbitrary file on the server
+    or make it fetch internal addresses. Webcams are device indexes, video files
+    must live under VIDEO_SOURCES_DIR, and streams must use a media scheme and
+    a routable host (optionally restricted to CAMERA_STREAM_ALLOWED_HOSTS).
+    """
+    settings = get_settings()
+    value = (source_id or "").strip()
+
+    if source_type == "webcam":
+        if not value.isdigit():
+            raise _reject("Webcam source_id must be a device index.")
+        return value
+
+    if source_type == "video_file":
+        base = settings.resolved_video_sources_dir
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = base / value
+        try:
+            resolved = candidate.resolve()
+        except OSError as exc:
+            raise _reject("Invalid video file path.") from exc
+        if not resolved.is_relative_to(base):
+            raise _reject(f"Video files must be inside {base}.")
+        if not resolved.is_file():
+            raise _reject("Video file not found.")
+        return str(resolved)
+
+    # ip_stream
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise _reject("Invalid stream URL.") from exc
+    if parsed.scheme.lower() not in STREAM_SCHEMES or not parsed.hostname:
+        raise _reject("Stream URL must use rtsp(s):// or http(s):// and name a host.")
+    host = parsed.hostname.lower()
+    allowed_hosts = settings.camera_stream_allowed_hosts
+    if allowed_hosts and host not in allowed_hosts:
+        raise _reject("Stream host is not in CAMERA_STREAM_ALLOWED_HOSTS.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None  # a hostname; resolution happens inside OpenCV
+    if host in {"localhost", "localhost.localdomain"} or (
+        address is not None
+        and (
+            address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_unspecified
+            or address.is_reserved
+        )
+    ):
+        raise _reject("Stream host must be a routable camera address.")
+    return value
 
 
 class CameraControlRequest(BaseModel):
@@ -155,10 +227,11 @@ async def list_camera_sources():
 async def start_camera(request: Request, payload: CameraStartRequest):
     """Start camera capture."""
     _assert_camera_access(request, owner_module=payload.owner_module)
-    
+    source_id = validate_camera_source(payload.source_type, payload.source_id or "0")
+
     success = camera_manager.start(
         source_type=payload.source_type,
-        source_id=payload.source_id or "0",
+        source_id=source_id,
         owner_module=payload.owner_module,
         owner_token=payload.owner_token,
     )

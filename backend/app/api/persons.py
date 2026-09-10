@@ -37,10 +37,58 @@ def _invalidate_gate_cache() -> None:
         pass
 
 
+# Upload limits. Everything is buffered in memory before the face pipeline
+# runs, so unbounded bodies were an easy way to take the gate offline.
+MAX_UPLOAD_FILES = 10
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_CSV_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_DATA_URL_CHARS = 10_000_000  # ~7.5 MB of base64 image
+ALLOWED_UPLOAD_PREFIXES = ("image/", "video/")
+
+
+async def _read_upload_capped(uploaded_file: UploadFile) -> bytes:
+    """Read one upload, rejecting the wrong type before reading and oversize
+    bodies without holding more than the cap in memory."""
+    content_type = (uploaded_file.content_type or "").lower()
+    if not content_type.startswith(ALLOWED_UPLOAD_PREFIXES):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported upload type '{content_type or 'unknown'}'; send an image or video.",
+        )
+    data = await uploaded_file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Each upload must be {MAX_UPLOAD_BYTES // (1024 * 1024)} MB or smaller.",
+        )
+    return data
+
+
+async def _collect_media_items(files: List[UploadFile]) -> list:
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"At most {MAX_UPLOAD_FILES} files per enrollment request.",
+        )
+    media_items = []
+    for uploaded_file in files:
+        file_bytes = await _read_upload_capped(uploaded_file)
+        if not file_bytes:
+            continue
+        media_items.append(
+            (
+                uploaded_file.filename or f"upload-{len(media_items) + 1}",
+                file_bytes,
+                uploaded_file.content_type or "application/octet-stream",
+            )
+        )
+    return media_items
+
+
 class PersonUpsertRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     employee_id: Optional[str] = Field(default=None, max_length=50)
-    image_data_url: Optional[str] = None
+    image_data_url: Optional[str] = Field(default=None, max_length=MAX_IMAGE_DATA_URL_CHARS)
     shift_id: Optional[str] = Field(default=None, pattern="^(day|swing|night)$")
     is_active: bool = True
 
@@ -88,7 +136,10 @@ def _find_employee_id_conflict(
 
 
 def _apply_enrollment_image(person: Person, image_data_url: str) -> None:
-    image_bytes, mime_type = parse_image_data_url(image_data_url)
+    try:
+        image_bytes, mime_type = parse_image_data_url(image_data_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     embedding_payload = build_embedding_payload_from_image(image_bytes)
 
     if embedding_payload["status"] == "no_face_detected":
@@ -197,25 +248,15 @@ async def create_person_from_media(
     db: Session = Depends(get_db),
 ):
     cleaned_employee_id = employee_id.strip() if employee_id else None
+    # Validate the uploads before touching the database, so a rejected request
+    # never leaves a half-created worker behind.
+    media_items = await _collect_media_items(files)
     person = _create_person_record(
         db=db,
         name=name,
         employee_id=cleaned_employee_id,
         is_active=is_active,
     )
-
-    media_items = []
-    for uploaded_file in files:
-        file_bytes = await uploaded_file.read()
-        if not file_bytes:
-            continue
-        media_items.append(
-            (
-                uploaded_file.filename or f"upload-{len(media_items) + 1}",
-                file_bytes,
-                uploaded_file.content_type or "application/octet-stream",
-            )
-        )
 
     if media_items:
         try:
@@ -279,18 +320,7 @@ async def update_person_from_media(
             detail=f"Employee ID '{cleaned_employee_id}' is already enrolled.",
         )
 
-    media_items = []
-    for uploaded_file in files:
-        file_bytes = await uploaded_file.read()
-        if not file_bytes:
-            continue
-        media_items.append(
-            (
-                uploaded_file.filename or f"upload-{len(media_items) + 1}",
-                file_bytes,
-                uploaded_file.content_type or "application/octet-stream",
-            )
-        )
+    media_items = await _collect_media_items(files)
 
     if not media_items:
         raise HTTPException(
@@ -429,11 +459,16 @@ async def bulk_import_persons(
     otherwise a new metadata-only record is created (no face embedding —
     enrollment media still has to be uploaded separately).
     """
-    raw = await file.read()
+    raw = await file.read(MAX_CSV_BYTES + 1)
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CSV file is empty.",
+        )
+    if len(raw) > MAX_CSV_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Roster CSV must be {MAX_CSV_BYTES // (1024 * 1024)} MB or smaller.",
         )
 
     try:
@@ -441,8 +476,18 @@ async def bulk_import_persons(
     except UnicodeDecodeError:
         text = raw.decode("latin-1", errors="replace")
 
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    # strict: a malformed quote is an error, not a silently merged row.
+    reader = csv.DictReader(io.StringIO(text), strict=True)
+    try:
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    except csv.Error as exc:
+        # Unterminated quotes, oversized fields, and similar produced a 500.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"CSV could not be parsed near line {reader.line_num}: {exc}",
+        ) from exc
+    if not fieldnames:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CSV is missing a header row.",
@@ -450,7 +495,7 @@ async def bulk_import_persons(
 
     # Normalise headers so callers don't have to match our exact casing.
     header_map = {
-        (h or "").strip().lower().replace(" ", "_"): h for h in reader.fieldnames
+        (h or "").strip().lower().replace(" ", "_"): h for h in fieldnames
     }
     if "name" not in header_map:
         raise HTTPException(
@@ -472,7 +517,7 @@ async def bulk_import_persons(
     errors: List[Dict[str, Any]] = []
     total_rows = 0
 
-    for index, row in enumerate(reader, start=2):  # line 1 is header
+    for index, row in enumerate(rows, start=2):  # line 1 is header
         total_rows += 1
         name = pick(row, "name")
         if not name:
