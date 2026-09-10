@@ -404,6 +404,9 @@ def _truthy(value: Any, default: bool = True) -> bool:
 class BulkImportSummary(BaseModel):
     created: int
     updated: int
+    # Existing rows whose is_active flipped False -> True because the file said
+    # so. Reported separately so an unintended re-activation is visible.
+    reactivated: int = 0
     skipped: int
     errors: List[Dict[str, Any]]
     total_rows: int
@@ -464,6 +467,7 @@ async def bulk_import_persons(
 
     created = 0
     updated = 0
+    reactivated = 0
     skipped = 0
     errors: List[Dict[str, Any]] = []
     total_rows = 0
@@ -488,10 +492,17 @@ async def bulk_import_persons(
 
         try:
             if existing:
+                # Only columns present in the file may change an existing row.
+                # A name-only correction file used to null shift_id and set
+                # is_active=True, silently re-activating offboarded workers.
                 existing.name = name
-                existing.shift_id = shift_id
-                existing.is_active = is_active
-                write_person_profile(existing.id, {"shift_id": shift_id})
+                if "shift_id" in header_map:
+                    existing.shift_id = shift_id
+                    write_person_profile(existing.id, {"shift_id": shift_id})
+                if "is_active" in header_map:
+                    if is_active and not existing.is_active:
+                        reactivated += 1
+                    existing.is_active = is_active
                 updated += 1
             else:
                 person = Person(
@@ -516,6 +527,7 @@ async def bulk_import_persons(
     return BulkImportSummary(
         created=created,
         updated=updated,
+        reactivated=reactivated,
         skipped=skipped,
         errors=errors,
         total_rows=total_rows,

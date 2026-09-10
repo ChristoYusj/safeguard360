@@ -1456,10 +1456,9 @@ function Attendance() {
             : review,
         ),
       );
-      const decidedReview = await decideAttendanceReview(reviewId, {
-        decision,
-        decided_by: user?.email || "Authorized operator",
-      });
+      // Attribution is taken from the session server-side; the body only
+      // carries the decision.
+      const decidedReview = await decideAttendanceReview(reviewId, { decision });
       setGateReviews((current) =>
         current.map((review) => (review.id === reviewId ? decidedReview : review)),
       );

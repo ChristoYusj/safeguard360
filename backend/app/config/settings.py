@@ -64,7 +64,13 @@ class Settings(BaseSettings):
     MAIL_EXPOSE_LOCAL_RESET_LINKS: bool = False
     RESEND_API_KEY: str = ""
     RESEND_FROM_EMAIL: str = ""
+    # Origin used in emailed links (password reset, account approval). Required:
+    # it is never derived from request headers, which the sender controls.
     FRONTEND_APP_URL: str = ""
+    # Origin the backend API is reachable at from a browser. Only needed when it
+    # differs from FRONTEND_APP_URL (the Vite dev proxy and same-origin serving
+    # make them identical).
+    PUBLIC_API_BASE_URL: str = ""
     TOTP_ENCRYPTION_KEY: str = ""
 
     # Bootstrap operator
@@ -120,6 +126,11 @@ class Settings(BaseSettings):
         ]
 
     @property
+    def resolved_public_api_base_url(self) -> str:
+        raw = (self.PUBLIC_API_BASE_URL or "").strip() or (self.FRONTEND_APP_URL or "").strip()
+        return raw.rstrip("/")
+
+    @property
     def bootstrap_admin_enabled(self) -> bool:
         return bool(self.ADMIN_EMAIL and self.BOOTSTRAP_ADMIN_PASSWORD)
 
@@ -132,6 +143,7 @@ class Settings(BaseSettings):
             "JWT_APPROVAL_SECRET": self.JWT_APPROVAL_SECRET,
             "ADMIN_EMAIL": self.ADMIN_EMAIL,
             "TOTP_ENCRYPTION_KEY": self.TOTP_ENCRYPTION_KEY,
+            "FRONTEND_APP_URL": self.FRONTEND_APP_URL,
         }
         if self.resolved_mail_transport == "resend":
             required["RESEND_API_KEY"] = self.RESEND_API_KEY

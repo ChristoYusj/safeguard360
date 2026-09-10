@@ -28,7 +28,7 @@ def mail_settings_guard(tmp_path):
     original_expose = settings.MAIL_EXPOSE_LOCAL_RESET_LINKS
     original_frontend = settings.FRONTEND_APP_URL
     settings.MAIL_LOCAL_OUTBOX_DIR = str(tmp_path)
-    settings.FRONTEND_APP_URL = ""
+    settings.FRONTEND_APP_URL = "http://frontend.test"
     try:
         yield settings
     finally:
@@ -84,7 +84,9 @@ def test_request_password_reset_can_expose_local_reset_url_when_explicitly_enabl
     )
 
     assert result["delivery_mode"] == "local"
-    assert result["local_reset_url"].startswith("http://testserver/auth/reset-password?token=")
+    # The link origin is the configured FRONTEND_APP_URL, not the request's
+    # base_url ("http://testserver" here).
+    assert result["local_reset_url"].startswith("http://frontend.test/auth/reset-password?token=")
 
 
 def test_request_password_reset_masks_provider_errors(db_session, mail_settings_guard, monkeypatch):
