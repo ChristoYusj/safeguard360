@@ -40,9 +40,15 @@ yarn-error.log*
 data/models/*
 !data/models/.gitkeep
 !data/models/README.md
+# MediaPipe face landmarker weights: downloaded on first use, SHA-256 verified
+backend/app/inference/models/*.task
+backend/app/inference/models/*.part
 
 # Backend runtime data (enrollment thumbnails, attendance snapshots)
 backend/data/
+data/attendance/
+data/faces/
+data/tmp/
 
 # OS
 .DS_Store

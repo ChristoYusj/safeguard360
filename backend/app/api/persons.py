@@ -123,6 +123,15 @@ def _create_person_record(
 ) -> Person:
     conflict = _find_employee_id_conflict(db, employee_id)
     if conflict:
+        if not conflict.is_active:
+            conflict.name = name.strip()
+            conflict.employee_id = employee_id
+            conflict.is_active = is_active
+            conflict.embedding = None
+            conflict.thumbnail_path = None
+            db.flush()
+            return conflict
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Employee ID '{employee_id}' is already enrolled.",

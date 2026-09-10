@@ -42,6 +42,11 @@ data/models/
 - `models/buffalo_l/`
   InsightFace / ArcFace face-recognition assets (downloaded by InsightFace on
   first use when absent)
+- `backend/app/inference/models/face_landmarker.task` (outside this folder)
+  MediaPipe Face Landmarker used by the driver monitor. Not committed either:
+  the backend downloads it from Google's model bucket on first use with a 30 s
+  timeout and refuses to load it unless its SHA-256 matches the pinned digest
+  in `backend/app/inference/driver.py`.
 
 ## Configuration
 

@@ -1,6 +1,7 @@
 """Driver Monitoring - Fatigue and Distraction Detection using MediaPipe."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -31,8 +32,35 @@ MODEL_DOWNLOAD_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
 )
+# SHA-256 of the float16/1 release above. The file is not committed (it is a
+# 3.7 MB runtime asset); it is fetched once and verified before use.
+MODEL_SHA256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+MODEL_DOWNLOAD_TIMEOUT_SECONDS = 30
 _MODEL_BUFFER_LOCK = threading.Lock()
 _MODEL_ASSET_BUFFER: Optional[bytes] = None
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _download_model_asset(model_path: Path) -> bytes:
+    """Fetch the face landmarker model, verify its checksum, write it atomically."""
+    logger.info("Downloading MediaPipe face landmarker model to %s", model_path)
+    with urllib.request.urlopen(
+        MODEL_DOWNLOAD_URL, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS
+    ) as response:
+        data = response.read()
+    digest = _sha256(data)
+    if digest != MODEL_SHA256:
+        raise RuntimeError(
+            "face_landmarker.task checksum mismatch: "
+            f"expected {MODEL_SHA256}, got {digest}"
+        )
+    partial_path = model_path.with_suffix(model_path.suffix + ".part")
+    partial_path.write_bytes(data)
+    partial_path.replace(model_path)
+    return data
 
 
 class DriverEventType(str, Enum):
@@ -134,10 +162,16 @@ class DriverDetector:
 
             model_path = cls._resolve_model_path()
             model_path.parent.mkdir(parents=True, exist_ok=True)
-            if not model_path.exists():
-                urllib.request.urlretrieve(MODEL_DOWNLOAD_URL, model_path)
+            data = model_path.read_bytes() if model_path.exists() else None
+            if data is not None and _sha256(data) != MODEL_SHA256:
+                logger.warning(
+                    "Cached %s failed its checksum; re-downloading.", model_path.name
+                )
+                data = None
+            if data is None:
+                data = _download_model_asset(model_path)
 
-            _MODEL_ASSET_BUFFER = model_path.read_bytes()
+            _MODEL_ASSET_BUFFER = data
             return _MODEL_ASSET_BUFFER
 
     def _get_detector_status_message(self) -> str:

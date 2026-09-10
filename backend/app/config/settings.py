@@ -2,7 +2,6 @@
 Application Settings
 """
 from pathlib import Path
-from typing import Tuple
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,8 +21,7 @@ class Settings(BaseSettings):
     # resolved_database_url), so this default matches docs/architecture.md.
     DATABASE_URL: str = "sqlite:///./data/safeguard360.db"
 
-    # Camera
-    CAMERA_RESOLUTION: str = "640,480"
+    # Camera. Capture runs unthrottled; FPS_LIMIT paces the preview broadcast.
     FPS_LIMIT: int = 30
 
     # Models
@@ -72,11 +70,6 @@ class Settings(BaseSettings):
     # Bootstrap operator
     BOOTSTRAP_ADMIN_NAME: str = "System Administrator"
     BOOTSTRAP_ADMIN_PASSWORD: str = ""
-
-    @property
-    def camera_resolution_tuple(self) -> Tuple[int, int]:
-        w, h = self.CAMERA_RESOLUTION.split(",")
-        return (int(w), int(h))
 
     @property
     def resolved_database_url(self) -> str:

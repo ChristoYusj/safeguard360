@@ -41,6 +41,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
+    client_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatResponse(BaseModel):
@@ -83,6 +84,7 @@ def get_context(db: Session = Depends(get_db)):
         "unknown_attempts_today": ctx.unknown_attempts_today,
         "recent_alerts": ctx.recent_alerts,
         "recent_driver_events": ctx.recent_driver_events,
+        "recent_ppe_violations": ctx.recent_ppe_violations,
         "recent_attendance": ctx.recent_attendance,
         "on_site": ctx.on_site,
     }
@@ -98,7 +100,7 @@ def post_message(payload: ChatRequest, db: Session = Depends(get_db)):
     msg_dicts = [m.model_dump() for m in payload.messages]
 
     try:
-        result = send_chat(msg_dicts, db)
+        result = send_chat(msg_dicts, db, client_context=payload.client_context)
     except ChatbotNotConfigured as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
