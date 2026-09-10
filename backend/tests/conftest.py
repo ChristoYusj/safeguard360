@@ -52,11 +52,15 @@ def client():
     from app.db import connection
     from app.factory import create_app
     from app.services import auth as auth_service
+    from app.services import chatbot as chatbot_service
+    from app.services import llm_client
 
     connection.configure_database("sqlite:///:memory:")
     # The IP failure table is process-global; every TestClient request comes
     # from the same address, so lockout tests would poison later logins.
     auth_service._IP_FAILURES.clear()
+    chatbot_service.reset_rate_limits()
+    llm_client.reset_llm_client()
     app = create_app()
     with TestClient(app) as test_client:
         yield test_client

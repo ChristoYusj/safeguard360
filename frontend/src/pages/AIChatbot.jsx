@@ -347,6 +347,33 @@ function AIChatbot() {
         </div>
       ) : null}
 
+      {status?.configured &&
+      (status.reachable === false || status.model_available === false) ? (
+        <div
+          className="mb-6 flex items-start gap-3 rounded-xl border px-4 py-3"
+          style={{
+            borderColor: "var(--color-warning)",
+            background: "var(--color-warning-muted, rgba(245, 158, 11, 0.08))",
+          }}
+        >
+          <AlertTriangleIcon
+            size={20}
+            style={{ color: "var(--color-warning)" }}
+          />
+          <div>
+            <p
+              className="text-sm font-semibold"
+              style={{ color: "var(--color-warning)" }}
+            >
+              {status.reachable === false
+                ? "Assistant provider unreachable"
+                : "Configured model is not available"}
+            </p>
+            <p className="mt-1 text-sm text-secondary">{status.detail}</p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
         <section className="panel flex flex-col" style={{ minHeight: "70vh" }}>
           <div className="panel__header">
