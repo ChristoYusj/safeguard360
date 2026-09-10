@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:fallback": "node scripts/dev-fallback.cjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
