@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
 from app.db.models import Alert, Attendance, Event, Person
+from app.services.gate_compliance import normalize_ppe_details
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class SiteContext:
     unknown_attempts_today: int
     recent_alerts: List[Dict[str, Any]]
     recent_driver_events: List[Dict[str, Any]]
+    recent_ppe_violations: List[Dict[str, Any]]
     recent_attendance: List[Dict[str, Any]]
 
     def to_prompt_block(self) -> str:
@@ -83,6 +85,29 @@ class SiteContext:
                 lines.append(
                     f"    • {e.get('event_type')} at {e.get('timestamp')}"
                 )
+        if self.recent_ppe_violations:
+            lines.append("- Recent PPE violations:")
+            for violation in self.recent_ppe_violations[:5]:
+                person_name = violation.get("person_name") or "Unknown"
+                missing = violation.get("missing_items") or []
+                detected = violation.get("detected_items") or []
+                required = violation.get("required_items") or []
+                access = "access granted" if violation.get("access_granted") else "access denied"
+                details = [
+                    f"{person_name} at {violation.get('timestamp')}",
+                    f"status={violation.get('ppe_status') or 'non_compliant'}",
+                    f"missing={', '.join(missing) if missing else 'not specified'}",
+                    f"detected={', '.join(detected) if detected else 'none recorded'}",
+                    f"required={', '.join(required) if required else 'not specified'}",
+                    access,
+                ]
+                confidence = violation.get("confidence")
+                if confidence is not None:
+                    details.append(f"face confidence={confidence}")
+                detector_message = violation.get("detector_message")
+                if detector_message:
+                    details.append(f"detector note={detector_message}")
+                lines.append(f"    • {'; '.join(details)}")
         if self.recent_attendance:
             lines.append("- Recent gate activity:")
             for att in self.recent_attendance[:5]:
@@ -206,6 +231,39 @@ def build_site_context(db: Session) -> SiteContext:
         for e in recent_driver_events_q
     ]
 
+    recent_ppe_violations_q = (
+        db.query(Attendance)
+        .filter(Attendance.timestamp >= start_of_day)
+        .filter(Attendance.direction == "ENTRY")
+        .filter(Attendance.ppe_compliant.is_(False))
+        .order_by(Attendance.timestamp.desc())
+        .limit(8)
+        .all()
+    )
+    recent_ppe_violations = []
+    for attendance in recent_ppe_violations_q:
+        ppe_details = normalize_ppe_details(attendance.ppe_details)
+        recent_ppe_violations.append(
+            {
+                "person_name": attendance.person_name,
+                "person_id": attendance.person_id,
+                "timestamp": _iso(attendance.timestamp),
+                "access_granted": bool(attendance.access_granted),
+                "confidence": attendance.confidence,
+                "log_method": attendance.log_method,
+                "camera_source_type": attendance.camera_source_type,
+                "camera_source_id": attendance.camera_source_id,
+                "ppe_status": ppe_details.get("status"),
+                "required_items": ppe_details.get("required_items", []),
+                "detected_items": ppe_details.get("detected_items", []),
+                "missing_items": ppe_details.get("missing_items", []),
+                "detector_confidences": ppe_details.get("detector_confidences", {}),
+                "override_used": ppe_details.get("override_used"),
+                "override_reason_type": ppe_details.get("override_reason_type"),
+                "detector_message": ppe_details.get("detector_message"),
+            }
+        )
+
     recent_attendance_q = (
         db.query(Attendance)
         .order_by(Attendance.timestamp.desc())
@@ -234,8 +292,46 @@ def build_site_context(db: Session) -> SiteContext:
         unknown_attempts_today=unknown_attempts_today,
         recent_alerts=recent_alerts,
         recent_driver_events=recent_driver_events,
+        recent_ppe_violations=recent_ppe_violations,
         recent_attendance=recent_attendance,
     )
+
+
+def _client_context_to_prompt_block(client_context: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(client_context, dict):
+        return ""
+
+    fleet = client_context.get("fleet")
+    if not isinstance(fleet, dict):
+        return ""
+
+    lines: List[str] = ["CLIENT-SIDE FLEET LOGS"]
+    sessions_count = fleet.get("sessions_count")
+    driver_events_today = fleet.get("driver_events_today")
+    eye_closure_warnings_today = fleet.get("eye_closure_warnings_today")
+
+    if sessions_count is not None:
+        lines.append(f"- Fleet sessions in browser logs: {sessions_count}")
+    if driver_events_today is not None:
+        lines.append(f"- Driver events today in browser logs: {driver_events_today}")
+    if eye_closure_warnings_today is not None:
+        lines.append(
+            f"- Eye-closure warnings today in browser logs: {eye_closure_warnings_today}"
+        )
+
+    recent_events = fleet.get("recent_driver_events")
+    if isinstance(recent_events, list) and recent_events:
+        lines.append("- Recent browser fleet events:")
+        for event in recent_events[:8]:
+            if not isinstance(event, dict):
+                continue
+            driver = event.get("driver_name") or "Unknown driver"
+            truck = event.get("truck_id") or "unknown truck"
+            details = event.get("details") or event.get("event_type") or "Driver event"
+            timestamp = event.get("timestamp") or "unknown time"
+            lines.append(f"    - {driver} / {truck}: {details} at {timestamp}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +347,8 @@ and driver monitoring.
 You have three jobs:
 1. Answer operator questions about the current site state using the \
    SITE SNAPSHOT block injected into every turn. Be concrete: cite names, \
-   counts, timestamps.
+   counts, timestamps, missing PPE items, access decisions, and confidence \
+   values when they are present.
 2. Give practical safety guidance — PPE requirements, evacuation basics, \
    lockout/tagout, incident reporting workflows.
 3. Help the operator interpret what the platform is showing them \
@@ -262,7 +359,9 @@ Rules:
   politely redirect.
 - If the snapshot doesn't contain the answer, say so plainly — do NOT \
   invent data. Suggest where the operator can find it in the UI.
-- Keep answers short and actionable. Use bullet points for lists.
+- Keep answers short by default, but when the operator asks about violations \
+  or warnings, give an incident-style summary with the available details. \
+  Use bullet points for lists.
 - Never reveal the raw SITE SNAPSHOT verbatim; summarise.
 - Today's date: treat the 'generated_at' timestamp as authoritative.
 """
@@ -296,6 +395,7 @@ def is_configured() -> bool:
 def send_chat(
     messages: List[Dict[str, str]],
     db: Session,
+    client_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Send a conversation to Groq with live site context.
 
@@ -317,6 +417,9 @@ def send_chat(
     try:
         context = build_site_context(db)
         context_block = context.to_prompt_block()
+        client_context_block = _client_context_to_prompt_block(client_context)
+        if client_context_block:
+            context_block = f"{context_block}\n\n{client_context_block}"
     except Exception:
         logger.exception("Chatbot: failed to build site context.")
         context_block = "SITE SNAPSHOT unavailable — database query failed."
