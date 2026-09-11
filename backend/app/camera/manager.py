@@ -83,6 +83,13 @@ class GateEventData:
     review_reasons: List[str] = None
 
 
+# A cap.read() against a disconnected USB camera can block for a while, so the
+# capture thread gets longer than the frame-slot consumers.
+CAPTURE_JOIN_TIMEOUT = 3.0
+# How long start() waits for a previous run's stragglers before refusing.
+ORPHAN_GRACE_SECONDS = 2.0
+
+
 class CameraManager:
     """Simple camera manager with background capture."""
     
@@ -157,7 +164,17 @@ class CameraManager:
         self.gate_detection_interval = 0.15
         self.last_gate_detection_at = 0.0
         self.gate_processing_thread: Optional[threading.Thread] = None
-        
+
+        # Threads that missed their join during stop(). They are still running
+        # against the old capture, so a new start() must not clear stop_event
+        # underneath them — that used to reanimate them and give the site two
+        # gate loops writing two attendance rows per worker.
+        self._orphaned_threads: List[threading.Thread] = []
+        # Consecutive failures loading each detector, so a broken install backs
+        # off instead of retrying (and printing a traceback) 50 times a second.
+        self._detector_load_failures: dict[str, int] = {}
+        self._detector_retry_at: dict[str, float] = {}
+
         self._initialized = True
 
     def _record_debug_metric(self, name: str, value: float, *, alpha: float = 0.18) -> None:
@@ -205,26 +222,61 @@ class CameraManager:
     def _bump_state_version(self) -> None:
         self.state_version += 1
     
+    def _detector_backoff_seconds(self, kind: str) -> float:
+        """How long to wait before retrying a detector that failed to load.
+
+        A missing or broken model dependency is not going to fix itself in
+        20 ms. Doubling from 0.5 s to a 30 s ceiling turns a traceback flood
+        into a readable log, and the processing loop stays responsive to stop.
+        """
+        failures = self._detector_load_failures.get(kind, 0)
+        if failures <= 0:
+            return 0.0
+        return min(0.5 * (2 ** (failures - 1)), 30.0)
+
+    def _record_detector_failure(self, kind: str, message: str) -> None:
+        failures = self._detector_load_failures.get(kind, 0) + 1
+        self._detector_load_failures[kind] = failures
+        delay = self._detector_backoff_seconds(kind)
+        self._detector_retry_at[kind] = time.time() + delay
+        self.error = message
+        # Only the first failure gets a traceback; the rest would be the same
+        # one repeated.
+        if failures == 1:
+            logger.exception("%s Retrying in %.1fs.", message, delay)
+        else:
+            logger.warning("%s (attempt %d). Retrying in %.1fs.", message, failures, delay)
+
+    def _detector_retry_blocked(self, kind: str) -> bool:
+        retry_at = self._detector_retry_at.get(kind, 0.0)
+        return retry_at > 0.0 and time.time() < retry_at
+
     def _ensure_driver_detector(self):
         """Lazy load driver detector."""
-        if self.driver_detector is None:
-            try:
-                from app.camera.driver_runtime import DriverDetectorClient
+        if self.driver_detector is not None or self._detector_retry_blocked("driver"):
+            return
+        try:
+            from app.camera.driver_runtime import DriverDetectorClient
 
-                self.driver_detector = DriverDetectorClient()
-                self.driver_state = self.driver_detector.get_state_dict()
-            except Exception:
-                logger.exception("Failed to load driver detector.")
+            self.driver_detector = DriverDetectorClient()
+            self.driver_state = self.driver_detector.get_state_dict()
+            self._detector_load_failures.pop("driver", None)
+            self._detector_retry_at.pop("driver", None)
+        except Exception:
+            self._record_detector_failure("driver", "Failed to load the driver detector.")
 
     def _ensure_gate_detector(self):
         """Lazy load gate attendance recognizer."""
-        if self.gate_detector is None:
-            try:
-                from app.services.gate_attendance import gate_attendance_recognizer
+        if self.gate_detector is not None or self._detector_retry_blocked("gate"):
+            return
+        try:
+            from app.services.gate_attendance import gate_attendance_recognizer
 
-                self.gate_detector = gate_attendance_recognizer
-            except Exception:
-                logger.exception("Failed to load gate attendance recognizer.")
+            self.gate_detector = gate_attendance_recognizer
+            self._detector_load_failures.pop("gate", None)
+            self._detector_retry_at.pop("gate", None)
+        except Exception:
+            self._record_detector_failure("gate", "Failed to load the gate attendance recognizer.")
 
     def _start_gate_processing_worker(self) -> None:
         if self.gate_processing_thread and self.gate_processing_thread.is_alive():
@@ -265,12 +317,27 @@ class CameraManager:
         *,
         name: str,
         timeout: float = 1.5,
-    ) -> None:
+    ) -> bool:
+        """Join a worker thread. Returns True once it is really gone.
+
+        A thread that misses its join is remembered: it is still running
+        against the old capture, and start() must not clear stop_event while
+        it lives.
+        """
         if thread is None:
-            return
+            return True
         thread.join(timeout=timeout)
         if thread.is_alive():
             logger.warning("%s thread did not exit cleanly during camera stop.", name)
+            if thread not in self._orphaned_threads:
+                self._orphaned_threads.append(thread)
+            return False
+        return True
+
+    def _live_orphaned_threads(self) -> List[threading.Thread]:
+        """Drop orphans that have since exited; return the ones still running."""
+        self._orphaned_threads = [t for t in self._orphaned_threads if t.is_alive()]
+        return self._orphaned_threads
 
     def _resize_frame_to_max_width(self, frame, max_width: int):
         if frame is None or max_width <= 0:
@@ -393,7 +460,9 @@ class CameraManager:
 
             if self.driver_detector is None:
                 self._ensure_driver_detector()
-                if self._wait_for_stop(0.02):
+                # Wait out the backoff rather than spinning at 50 Hz on a
+                # detector that cannot load. stop still interrupts the wait.
+                if self._wait_for_stop(max(0.02, self._detector_backoff_seconds("driver"))):
                     break
                 continue
 
@@ -479,7 +548,9 @@ class CameraManager:
 
             if self.gate_detector is None:
                 self._ensure_gate_detector()
-                if self._wait_for_stop(0.02):
+                # Wait out the backoff rather than spinning at 50 Hz on a
+                # detector that cannot load. stop still interrupts the wait.
+                if self._wait_for_stop(max(0.02, self._detector_backoff_seconds("gate"))):
                     break
                 continue
 
@@ -645,6 +716,25 @@ class CameraManager:
                     return False
                 self._stop_locked()
 
+            # A previous run's thread that outlived its join is still sitting
+            # in its loop waiting on stop_event. Clearing that event below
+            # would wake it back up alongside the new one, and two gate loops
+            # write two attendance rows for every worker who walks through.
+            # Give the straggler a moment, then refuse rather than double up.
+            if self._live_orphaned_threads():
+                deadline = time.time() + ORPHAN_GRACE_SECONDS
+                while self._live_orphaned_threads() and time.time() < deadline:
+                    time.sleep(0.05)
+                stragglers = self._live_orphaned_threads()
+                if stragglers:
+                    self.error = (
+                        f"{len(stragglers)} camera worker(s) from the previous session are still "
+                        "shutting down. Wait a few seconds and start again."
+                    )
+                    logger.warning("Refusing to start: %s", self.error)
+                    self._bump_state_version()
+                    return False
+
             self.source_type = source_type
             self.source_id = source_id
             self.error = ""
@@ -783,13 +873,22 @@ class CameraManager:
         self.driver_processing_thread = None
         self.preview_processing_thread = None
 
+        # Order matters: the capture thread may be parked inside cap.read().
+        # Releasing the device first pulls the buffer out from under an
+        # OpenCV call that is still using it, which is a use-after-free in the
+        # C++ layer, so the thread is joined before anything is released. Its
+        # timeout is longer than the workers' because a read against a
+        # disconnected USB camera can sit there for a second or more.
+        self._join_thread(capture_thread, name="capture", timeout=CAPTURE_JOIN_TIMEOUT)
+
         if cap:
             try:
                 cap.release()
             except Exception:
                 logger.exception("Release error.")
 
-        self._join_thread(capture_thread, name="capture")
+        # The worker threads only touch the shared frame slot, never the
+        # capture, so they are safe to join after the release.
         self._join_thread(gate_thread, name="gate")
         self._join_thread(driver_thread, name="driver")
         self._join_thread(preview_thread, name="preview")
@@ -940,6 +1039,21 @@ class CameraManager:
         consumer threads (preview / gate / driver), so this loop stays
         CPU-cheap and lets the driver deliver its rated FPS.
         """
+        try:
+            self._run_capture_loop()
+        finally:
+            # Every path out of the loop other than a real stop() means the
+            # camera died: an unplugged device, a stream that dropped, a read
+            # that raised. The manager used to leave running=True, so the UI
+            # kept showing a live feed that was frozen on its last frame.
+            if not self.stop_event.is_set():
+                self.running = False
+                if not self.error:
+                    self.error = "Camera stopped delivering frames."
+                self._bump_state_version()
+                logger.warning("Capture loop exited without a stop request: %s", self.error)
+
+    def _run_capture_loop(self) -> None:
         consecutive_failures = 0
 
         while not self.stop_event.is_set():
