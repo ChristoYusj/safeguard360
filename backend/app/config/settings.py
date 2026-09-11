@@ -3,6 +3,7 @@ Application Settings
 """
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,34 @@ class Settings(BaseSettings):
     # Optional allow-list for `ip_stream` sources: comma-separated hostnames or
     # IPs. Empty = any host except loopback, link-local, multicast, unspecified.
     CAMERA_STREAM_ALLOWED_HOSTS: str = ""
+
+    # Gate recognition. These decide who the gate lets through, so they are
+    # configuration rather than literals buried in the recognition loop.
+    # Scores are ArcFace cosine similarity in [0, 1]; the UI shows them as a
+    # percentage, round(score * 100).
+    #   >= GATE_AUTO_PASS_THRESHOLD   the gate decides on its own
+    #   >= GATE_REVIEW_THRESHOLD      the match goes to the operator queue
+    #   >= GATE_CANDIDATE_THRESHOLD   the face is named on screen as a maybe
+    #   below that                    the face is unknown
+    GATE_AUTO_PASS_THRESHOLD: float = 0.85
+    GATE_REVIEW_THRESHOLD: float = 0.79
+    GATE_CANDIDATE_THRESHOLD: float = 0.45
+    # Consecutive recognitions naming the same worker before the gate acts.
+    # At the 0.15 s recognition interval, 3 confirmations cost about 0.45 s.
+    GATE_REQUIRED_CONFIRMATIONS: int = 3
+    # The winning score must beat the runner-up worker's by this much to be
+    # decided automatically. A closer pair is an ambiguous identity and goes
+    # to the operator instead. 0 disables the check.
+    GATE_MATCH_MARGIN: float = 0.10
+    # Face-quality floors for live recognition. The defaults are deliberately
+    # lenient (Apr 2026 operator feedback: the stricter values produced false
+    # "face is turned / too far" rejections at a real gate) and the yaw check
+    # is off by default at inf. Tighten them per site; docs/attendance-gate.md
+    # explains what each one costs.
+    GATE_MIN_DET_SCORE: float = 0.30
+    GATE_MIN_BLUR_SCORE: float = 5.0
+    GATE_MIN_FACE_AREA_RATIO: float = 0.001
+    GATE_MAX_YAW_OFFSET: float = float("inf")
 
     # Models
     MODELS_DIR: str = "./data/models"
@@ -92,6 +121,26 @@ class Settings(BaseSettings):
     # Bootstrap operator
     BOOTSTRAP_ADMIN_NAME: str = "System Administrator"
     BOOTSTRAP_ADMIN_PASSWORD: str = ""
+
+    @model_validator(mode="after")
+    def _check_gate_thresholds(self) -> "Settings":
+        """Refuse to boot on a gate configuration that cannot mean anything.
+
+        An inverted pair would silently turn one of the three bands into dead
+        code, which is exactly the class of bug these settings replace.
+        """
+        if not 0.0 < self.GATE_AUTO_PASS_THRESHOLD <= 1.0:
+            raise ValueError("GATE_AUTO_PASS_THRESHOLD must be between 0 and 1.")
+        if not self.GATE_CANDIDATE_THRESHOLD <= self.GATE_REVIEW_THRESHOLD <= self.GATE_AUTO_PASS_THRESHOLD:
+            raise ValueError(
+                "Gate thresholds must be ordered: "
+                "GATE_CANDIDATE_THRESHOLD <= GATE_REVIEW_THRESHOLD <= GATE_AUTO_PASS_THRESHOLD."
+            )
+        if self.GATE_REQUIRED_CONFIRMATIONS < 1:
+            raise ValueError("GATE_REQUIRED_CONFIRMATIONS must be at least 1.")
+        if self.GATE_MATCH_MARGIN < 0:
+            raise ValueError("GATE_MATCH_MARGIN cannot be negative.")
+        return self
 
     @property
     def resolved_database_url(self) -> str:

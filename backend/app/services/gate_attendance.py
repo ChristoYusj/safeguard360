@@ -62,10 +62,18 @@ class GateAttendanceRecognizer:
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.auto_pass_threshold = 0.85
-        self.review_threshold = 0.79
-        self.candidate_threshold = 0.45
-        self.required_confirmations = 1
+        # These four used to be written here and then ignored: the decision
+        # path compared against the literals 79, 84 and 85 instead, and one
+        # confirmation was enough to open the gate. They are now the only
+        # source of those numbers, and they come from configuration.
+        self.auto_pass_threshold = self.settings.GATE_AUTO_PASS_THRESHOLD
+        self.review_threshold = self.settings.GATE_REVIEW_THRESHOLD
+        self.candidate_threshold = self.settings.GATE_CANDIDATE_THRESHOLD
+        self.required_confirmations = self.settings.GATE_REQUIRED_CONFIRMATIONS
+        # How far ahead of the runner-up enrolled worker the winner must be to
+        # be decided automatically. Two people scoring within this margin is
+        # an ambiguous identity, not a match.
+        self.match_margin = self.settings.GATE_MATCH_MARGIN
         self.min_direction_gap_seconds = 45.0
         self.rearm_after_absence_seconds = 2.5
         self.gate_direction_mode = "ENTRY"
@@ -128,14 +136,15 @@ class GateAttendanceRecognizer:
         # so the yaw check is disabled and the blur/area floors are kept very
         # lenient. The ArcFace match threshold itself is the real filter; if a
         # face is too poor to embed, it simply won't match any enrolled worker.
-        self.min_det_score = 0.30         # InsightFace detection confidence floor (very lenient)
-        self.min_blur_score = 5.0         # Laplacian variance floor (very lenient — motion blur is fine)
-        self.min_face_area_ratio = 0.001  # Face must be >= 0.1% of frame area (very lenient)
-        # Yaw filter disabled: set to a sentinel that no real value will exceed.
-        # Keeping the plumbing in place so the field stays visible in the
-        # overlay payload for debugging, but the guidance path for "turned"
-        # never triggers.
-        self.max_yaw_offset = float("inf")
+        # They are settings now (defaults unchanged), so a site can tighten
+        # them from .env without a code change, and docs/attendance-gate.md
+        # states what is switched off.
+        self.min_det_score = self.settings.GATE_MIN_DET_SCORE
+        self.min_blur_score = self.settings.GATE_MIN_BLUR_SCORE
+        self.min_face_area_ratio = self.settings.GATE_MIN_FACE_AREA_RATIO
+        # Default inf = the yaw filter is off; the plumbing stays so the field
+        # remains visible in the overlay payload for debugging.
+        self.max_yaw_offset = self.settings.GATE_MAX_YAW_OFFSET
         # Unknown-face attempt logging cooldown (prevents flooding the review queue)
         self.last_unknown_attempt_logged_at: float = 0.0
         self.unknown_attempt_cooldown_seconds: float = 30.0
@@ -170,6 +179,41 @@ class GateAttendanceRecognizer:
 
     def _get_match_percent(self, score: float) -> int:
         return int(round(max(0.0, score) * 100))
+
+    @property
+    def auto_pass_percent(self) -> int:
+        """The on-screen percentage at which the gate decides on its own."""
+        return self._get_match_percent(self.auto_pass_threshold)
+
+    @property
+    def review_percent(self) -> int:
+        """The on-screen percentage at which a match goes to the operator."""
+        return self._get_match_percent(self.review_threshold)
+
+    def _match_band(self, match_percent: int) -> str:
+        """Which band a match percentage falls in: auto, review or below.
+
+        The single place the thresholds are compared. Before this existed the
+        same three numbers were spelled out as literals at three call sites,
+        so changing auto_pass_threshold changed nothing.
+        """
+        if match_percent >= self.auto_pass_percent:
+            return "auto"
+        if match_percent >= self.review_percent:
+            return "review"
+        return "below"
+
+    def _is_ambiguous_match(self, score: float, runner_up_score: float) -> bool:
+        """True when a second enrolled worker scores too close to the winner.
+
+        Without this the top cosine score won outright, so two people whose
+        embeddings sit a hair apart (or the same person enrolled twice) could
+        be let through under the wrong name. An ambiguous pair is sent to the
+        operator; it never denies entry on its own.
+        """
+        if self.match_margin <= 0:
+            return False
+        return (score - runner_up_score) < self.match_margin
 
     def get_gate_direction_mode(self) -> str:
         return self.gate_direction_mode
@@ -263,14 +307,25 @@ class GateAttendanceRecognizer:
             db.close()
 
     def _find_best_match(self, embedding, enrolled_people):
+        """Best enrolled worker for this face, plus the runner-up's score.
+
+        The runner-up is the best score from a *different* person, so the
+        caller can tell a clear identification from a coin flip between two
+        workers. Several enrolled photos of one worker collapse to that
+        worker's best score and never count as a runner-up.
+        """
         best_person = None
         best_score = 0.0
+        runner_up_score = 0.0
         for person, vectors in enrolled_people:
             person_score = max(cosine_similarity(embedding, vector) for vector in vectors)
             if person_score > best_score:
+                runner_up_score = best_score
                 best_score = person_score
                 best_person = person
-        return best_person, best_score
+            elif person_score > runner_up_score:
+                runner_up_score = person_score
+        return best_person, best_score, runner_up_score
 
     def _get_on_site_person_ids(self, now: datetime) -> set[str]:
         now_ts = time.time()
@@ -500,10 +555,17 @@ class GateAttendanceRecognizer:
         ppe_details: Dict[str, Any],
         person: Optional[Person] = None,
         direction: Optional[str] = None,
+        ambiguous_match: bool = False,
     ) -> List[str]:
         reasons: List[str] = []
+        # Both can be true at once, and both must be recorded: a match that is
+        # in the review band AND too close to another worker is two separate
+        # things for the operator to weigh, and dropping either one loses the
+        # override reason stamped on the permanent record.
         if review_band_match:
             reasons.append("face_confidence")
+        if ambiguous_match:
+            reasons.append("ambiguous_match")
 
         ppe_status = ppe_details.get("status")
         if ppe_status == "uncertain":
@@ -542,39 +604,59 @@ class GateAttendanceRecognizer:
 
     def _log_unknown_face_attempt(
         self,
-        frame,
+        *,
         direction: str,
         confidence: float,
-        timestamp: datetime,
-    ) -> None:
-        """Persist an unrecognised gate attempt as a PENDING GateReview for operator review."""
+        now_ts: float,
+    ) -> bool:
+        """Record an unrecognised face at the gate, at most once per cooldown.
+
+        An unknown face used to leave nothing behind at all: the overlay said
+        "Unknown face", the gate refused, and afterwards there was no way to
+        tell whether one person had tried once or fifty times. This writes a
+        gate-domain Event instead of the pending GateReview the earlier
+        version of this method created (that flooded the operator's queue with
+        phantom "Unknown" sessions, which is why it was abandoned unused).
+
+        No snapshot is stored. The person is by definition not enrolled, so
+        keeping their photo would collect biometric data on someone who never
+        consented to it; the time, the direction and the best score are the
+        security-relevant facts.
+
+        Returns True when an Event was written.
+        """
+        if now_ts - self.last_unknown_attempt_logged_at < self.unknown_attempt_cooldown_seconds:
+            return False
+        self.last_unknown_attempt_logged_at = now_ts
+
+        message = (
+            f"Unrecognised face at the gate ({direction.lower()} mode); "
+            f"best match {self._get_match_percent(confidence)}%, below the "
+            f"{self.review_percent}% review threshold."
+        )
         db = SessionLocal()
         try:
-            review = GateReview(
-                person_id=None,
-                person_name="Unknown",
-                suggested_direction=direction,
-                confidence=confidence,
-                timestamp=timestamp,
-                status="PENDING",
-                review_reasons=serialize_review_reasons(["unknown_person"]),
-                ppe_details=serialize_ppe_details({}),
+            create_event_record(
+                db,
+                category="GATE",
+                event_type="unknown_face",
+                severity="WARNING",
+                message=message,
+                data={
+                    "message": message,
+                    "direction": direction,
+                    "best_score": round(float(confidence), 4),
+                    "review_threshold": self.review_threshold,
+                    "cooldown_seconds": self.unknown_attempt_cooldown_seconds,
+                },
+                is_resolved=False,
             )
-            db.add(review)
-            db.flush()
-
-            snapshot = self._encode_snapshot(frame)
-            if snapshot is not None:
-                image_bytes, mime_type = snapshot
-                review.snapshot_path = write_attendance_snapshot(
-                    review.id,
-                    image_bytes,
-                    mime_type,
-                )
-
             db.commit()
+            return True
         except Exception:
-            pass
+            logger.exception("Failed to record an unknown-face gate attempt.")
+            db.rollback()
+            return False
         finally:
             db.close()
 
@@ -1409,7 +1491,7 @@ class GateAttendanceRecognizer:
         policy = self._get_gate_policy()
         candidate_scope = "all_enrolled"
         on_site_ids: set[str] = set()
-        overall_person, overall_score = self._find_best_match(best_face["embedding"], enrolled_people)
+        overall_person, overall_score, _ = self._find_best_match(best_face["embedding"], enrolled_people)
         overall_percent = self._get_match_percent(overall_score)
         candidate_people = enrolled_people
 
@@ -1448,7 +1530,7 @@ class GateAttendanceRecognizer:
             if (
                 overall_person is not None
                 and overall_person.id not in on_site_ids
-                and overall_percent >= 79
+                and self._match_band(overall_percent) != "below"
             ):
                 self._clear_ppe_history()
                 self.last_candidate_person_id = overall_person.id
@@ -1481,7 +1563,7 @@ class GateAttendanceRecognizer:
                 self._draw_match_box(frame, best_face["bbox"], label, (245, 158, 11))
                 return frame, events
 
-        person, score = self._find_best_match(best_face["embedding"], candidate_people)
+        person, score, runner_up_score = self._find_best_match(best_face["embedding"], candidate_people)
         match_percent = self._get_match_percent(score)
 
         if person is None or score < self.candidate_threshold:
@@ -1519,20 +1601,29 @@ class GateAttendanceRecognizer:
             )
             self._draw_match_box(frame, best_face["bbox"], "Unknown face", (0, 165, 255))
 
-            # Unknown-face attempts are no longer persisted as pending reviews — the
-            # gate still blocks them in real time, but we don't bloat the DB or the
-            # "on-site" count with phantom Unknown sessions that have to be manually
-            # approved. The visual "Unknown face" overlay + 4xx gate response is
-            # enough of an audit trail for this demo.
+            # Still not a pending GateReview: those bloated the operator queue
+            # with phantom "Unknown" sessions someone had to approve. A
+            # gate-domain Event, debounced to one per cooldown, records that
+            # somebody tried without adding work — and it is what makes the
+            # assistant's "unknown attempts today" counter real.
+            self._log_unknown_face_attempt(
+                direction=self.gate_direction_mode,
+                confidence=score,
+                now_ts=now_ts,
+            )
 
             return frame, events
 
-        if match_percent < 79:
+        if self._match_band(match_percent) == "below":
             held_ppe_details = self._get_live_ppe_details(now_ts, person_id=person.id)
             self.unknown_face_streak = 0
             self.last_match_state_seen_at = now_ts
-            self.last_candidate_person_id = person.id
-            self.last_candidate_streak = 1
+            # This frame did not clear the review threshold, so it is not
+            # evidence and must not count toward the confirmation streak. It
+            # used to claim the candidate and set the streak to 1, which meant
+            # "three confirmations" could be satisfied by two qualifying frames
+            # preceded by a weak one. It does not reset the streak either: a
+            # single blurred frame should not throw away a run of good ones.
             label = f"{person.name} {match_percent}%"
             self.gate_state = self._build_gate_state(
                 match_status="possible_match",
@@ -1629,7 +1720,11 @@ class GateAttendanceRecognizer:
             self.last_candidate_streak = 1
 
         confirmed = self.last_candidate_streak >= self.required_confirmations
-        review_band_match = 79 <= match_percent <= 84
+        ambiguous_match = self._is_ambiguous_match(score, runner_up_score)
+        in_review_band = self._match_band(match_percent) == "review"
+        # Either condition sends the decision to the operator, but they are
+        # reported separately (see _build_review_reasons).
+        review_band_match = in_review_band or ambiguous_match
         direction: Optional[str] = None
         details = f"{person.name} recognized at the gate."
         ppe_details = normalize_ppe_details({})
@@ -1676,10 +1771,11 @@ class GateAttendanceRecognizer:
                         now_ts=now_ts,
                     )
                 review_reasons = self._build_review_reasons(
-                    review_band_match=review_band_match,
+                    review_band_match=in_review_band,
                     ppe_details=ppe_details,
                     person=person,
                     direction=direction,
+                    ambiguous_match=ambiguous_match,
                 )
                 ppe_blocked = self._should_block_for_ppe(
                     direction=direction,

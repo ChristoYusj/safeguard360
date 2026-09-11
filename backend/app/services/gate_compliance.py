@@ -193,6 +193,8 @@ def ppe_reason_messages(review_reasons: Iterable[str]) -> List[str]:
     for reason in normalize_review_reasons(review_reasons):
         if reason == "face_confidence":
             messages.append("Face confidence needs operator review.")
+        elif reason == "ambiguous_match":
+            messages.append("Two enrolled workers scored too close to tell apart.")
         elif reason == "uncertain_ppe":
             messages.append("PPE status is uncertain.")
         elif reason.startswith("missing_"):

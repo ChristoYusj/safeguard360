@@ -242,7 +242,13 @@ def _get_live_camera_source() -> Dict[str, Optional[str]]:
 
 
 def _resolve_override_reason_type(review_reasons: List[str]) -> Optional[str]:
-    has_face_reason = "face_confidence" in review_reasons
+    # ambiguous_match is a face-recognition reason like face_confidence: the
+    # gate could not tell two enrolled workers apart. Without it here, an
+    # ambiguous-only review approved by an operator recorded override_used
+    # with no reason type at all.
+    has_face_reason = any(
+        reason in {"face_confidence", "ambiguous_match"} for reason in review_reasons
+    )
     has_ppe_reason = any(
         reason == "uncertain_ppe" or reason.startswith("missing_")
         for reason in review_reasons
