@@ -715,6 +715,15 @@ class CameraManager:
                     self.error = f"Camera is currently controlled by {self.get_owner_label()}."
                     return False
                 self._stop_locked()
+            elif self.cap is not None or self.thread is not None:
+                # running is False but the previous run left things behind: the
+                # capture loop retired itself (see its finally clause) without
+                # being able to tear down, because a thread cannot join itself.
+                # Skipping the teardown here would leak that VideoCapture --
+                # and on Windows a leaked handle keeps the device busy, so the
+                # feed would never come back without restarting the process.
+                logger.info("Cleaning up after a camera session that ended on its own.")
+                self._stop_locked()
 
             # A previous run's thread that outlived its join is still sitting
             # in its loop waiting on stop_event. Clearing that event below
