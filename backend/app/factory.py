@@ -19,6 +19,11 @@ from app.middleware.auth import OperatorAuthMiddleware
 
 logger = logging.getLogger(__name__)
 
+# How long the broadcaster waits between passes when no websocket client is
+# connected. Pending camera events are still drained on this slower cadence so
+# their queues cannot grow without bound.
+IDLE_BROADCAST_INTERVAL = 0.25
+
 
 async def frame_broadcaster():
     """Background task to broadcast frames and driver events."""
@@ -28,6 +33,10 @@ async def frame_broadcaster():
     status_interval_seconds = 0.6
     while True:
         try:
+            # Nobody watching means nothing to deliver. The camera keeps
+            # capturing and recognising in its own threads either way; this
+            # loop just stops waking 50 times a second to find no audience.
+            has_clients = bool(manager.live_connections or manager.events_connections)
             if camera_manager.running:
                 frame_packet = camera_manager.get_latest_frame_packet()
                 if frame_packet and len(manager.live_connections) > 0:
@@ -38,7 +47,7 @@ async def frame_broadcaster():
                         frame_count += 1
 
                 now = time.monotonic()
-                if now - last_status_sent_at >= status_interval_seconds:
+                if manager.events_connections and now - last_status_sent_at >= status_interval_seconds:
                     state = camera_manager.get_state()
                     status_data = state.__dict__.copy()
 
@@ -79,7 +88,7 @@ async def frame_broadcaster():
                         "review_reasons": event.review_reasons,
                     })
 
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.02 if has_clients else IDLE_BROADCAST_INTERVAL)
         except Exception:
             logger.exception("Frame broadcaster error.")
             await asyncio.sleep(1)

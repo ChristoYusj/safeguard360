@@ -125,11 +125,25 @@ class ConnectionManager:
     def disconnect_live(self, websocket: WebSocket):
         self.live_connections.discard(websocket)
         self.live_connection_roles.pop(websocket, None)
-    
+
     def disconnect_events(self, websocket: WebSocket):
         self.events_connections.discard(websocket)
         self.events_connection_roles.pop(websocket, None)
-    
+
+    def _drop_live(self, dead: Set[WebSocket]) -> None:
+        """Forget sockets that failed a send, roles included.
+
+        The role maps used to keep an entry for every socket ever dropped
+        mid-broadcast, because only the connection set was pruned. On a long
+        shift that is a slow leak keyed by dead WebSocket objects.
+        """
+        for websocket in dead:
+            self.disconnect_live(websocket)
+
+    def _drop_events(self, dead: Set[WebSocket]) -> None:
+        for websocket in dead:
+            self.disconnect_events(websocket)
+
     async def broadcast_frame(self, frame_bytes: bytes):
         """Broadcast a raw JPEG frame to all live connections."""
         if not self.live_connections:
@@ -141,7 +155,11 @@ class ConnectionManager:
             )
 
         dead = set()
-        for ws in self.live_connections:
+        # Iterate a snapshot: every send below awaits, and a client that
+        # disconnects during one of those awaits mutates this set from the
+        # endpoint coroutine, which used to raise "Set changed size during
+        # iteration" and abort the whole broadcast for everyone else.
+        for ws in list(self.live_connections):
             try:
                 role = self.live_connection_roles.get(ws)
                 if not self._can_receive_domain(role, frame_domain):
@@ -161,7 +179,7 @@ class ConnectionManager:
                 logger.exception("WebSocket live send error.")
                 dead.add(ws)
         
-        self.live_connections -= dead
+        self._drop_live(dead)
     
     async def broadcast_status(self, status: dict):
         """Broadcast status to events connections."""
@@ -176,7 +194,8 @@ class ConnectionManager:
         })
         
         dead = set()
-        for ws in self.events_connections:
+        # Snapshot for the same reason as broadcast_frame: send_text awaits.
+        for ws in list(self.events_connections):
             try:
                 role = self.events_connection_roles.get(ws)
                 if not self._can_receive_domain(role, domain):
@@ -185,8 +204,8 @@ class ConnectionManager:
             except Exception:
                 logger.exception("WebSocket status send error.")
                 dead.add(ws)
-        
-        self.events_connections -= dead
+
+        self._drop_events(dead)
     
     async def broadcast_event(self, event: dict):
         """Broadcast an event to events connections."""
@@ -198,7 +217,7 @@ class ConnectionManager:
         message = json.dumps(event)
         
         dead = set()
-        for ws in self.events_connections:
+        for ws in list(self.events_connections):
             try:
                 role = self.events_connection_roles.get(ws)
                 if not self._can_receive_domain(role, domain):
@@ -207,8 +226,8 @@ class ConnectionManager:
             except Exception:
                 logger.exception("WebSocket event send error.")
                 dead.add(ws)
-        
-        self.events_connections -= dead
+
+        self._drop_events(dead)
 
 
 # Global manager
