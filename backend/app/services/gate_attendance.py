@@ -558,10 +558,14 @@ class GateAttendanceRecognizer:
         ambiguous_match: bool = False,
     ) -> List[str]:
         reasons: List[str] = []
+        # Both can be true at once, and both must be recorded: a match that is
+        # in the review band AND too close to another worker is two separate
+        # things for the operator to weigh, and dropping either one loses the
+        # override reason stamped on the permanent record.
+        if review_band_match:
+            reasons.append("face_confidence")
         if ambiguous_match:
             reasons.append("ambiguous_match")
-        elif review_band_match:
-            reasons.append("face_confidence")
 
         ppe_status = ppe_details.get("status")
         if ppe_status == "uncertain":
@@ -1614,8 +1618,12 @@ class GateAttendanceRecognizer:
             held_ppe_details = self._get_live_ppe_details(now_ts, person_id=person.id)
             self.unknown_face_streak = 0
             self.last_match_state_seen_at = now_ts
-            self.last_candidate_person_id = person.id
-            self.last_candidate_streak = 1
+            # This frame did not clear the review threshold, so it is not
+            # evidence and must not count toward the confirmation streak. It
+            # used to claim the candidate and set the streak to 1, which meant
+            # "three confirmations" could be satisfied by two qualifying frames
+            # preceded by a weak one. It does not reset the streak either: a
+            # single blurred frame should not throw away a run of good ones.
             label = f"{person.name} {match_percent}%"
             self.gate_state = self._build_gate_state(
                 match_status="possible_match",
@@ -1713,7 +1721,10 @@ class GateAttendanceRecognizer:
 
         confirmed = self.last_candidate_streak >= self.required_confirmations
         ambiguous_match = self._is_ambiguous_match(score, runner_up_score)
-        review_band_match = self._match_band(match_percent) == "review" or ambiguous_match
+        in_review_band = self._match_band(match_percent) == "review"
+        # Either condition sends the decision to the operator, but they are
+        # reported separately (see _build_review_reasons).
+        review_band_match = in_review_band or ambiguous_match
         direction: Optional[str] = None
         details = f"{person.name} recognized at the gate."
         ppe_details = normalize_ppe_details({})
@@ -1760,7 +1771,7 @@ class GateAttendanceRecognizer:
                         now_ts=now_ts,
                     )
                 review_reasons = self._build_review_reasons(
-                    review_band_match=review_band_match,
+                    review_band_match=in_review_band,
                     ppe_details=ppe_details,
                     person=person,
                     direction=direction,

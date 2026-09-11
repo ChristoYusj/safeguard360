@@ -201,12 +201,33 @@ function formatReviewReasons(review) {
     : [];
   const labels = [];
 
-  if (reviewReasons.includes("face_confidence")) {
-    labels.push("Face confidence needs approval");
-  }
-  if (reviewReasons.includes("uncertain_ppe")) {
-    labels.push("PPE status is uncertain");
-  }
+  const KNOWN_REASONS = {
+    face_confidence: "Face confidence needs approval",
+    ambiguous_match: "Two workers scored too close to tell apart",
+    uncertain_ppe: "PPE status is uncertain",
+  };
+
+  reviewReasons.forEach((reason) => {
+    if (KNOWN_REASONS[reason]) {
+      labels.push(KNOWN_REASONS[reason]);
+      return;
+    }
+    if (typeof reason === "string" && reason.startsWith("missing_")) {
+      labels.push(`Missing ${reason.slice("missing_".length).replace(/_/g, " ")}`);
+      return;
+    }
+    if (typeof reason === "string" && reason.startsWith("off_shift_")) {
+      labels.push(
+        `Arriving outside ${reason.slice("off_shift_".length).replace(/_/g, " ")} shift`,
+      );
+      return;
+    }
+    // Never render a review with a blank reason strip: an operator who cannot
+    // see why a decision is pending cannot make it.
+    if (typeof reason === "string" && reason) {
+      labels.push(reason.replace(/_/g, " "));
+    }
+  });
 
   return labels;
 }
