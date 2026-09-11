@@ -27,12 +27,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.db.models import Alert, Attendance, Event, Person
+from app.db.models import Alert, Attendance, Event
 from app.services import llm_client
+from app.services.attendance_state import get_on_site_workers
 from app.services.gate_compliance import normalize_ppe_details
 
 
@@ -182,32 +182,17 @@ def build_site_context(db: Session) -> SiteContext:
     """
     start_of_day = _start_of_day_utc()
 
-    # Who's currently on site: latest attendance row per person must be ENTRY.
-    subquery = (
-        db.query(
-            Attendance.person_id,
-            func.max(Attendance.timestamp).label("latest_ts"),
-        )
-        .filter(Attendance.person_id.isnot(None))
-        .group_by(Attendance.person_id)
-        .subquery()
-    )
-    latest_records = (
-        db.query(Attendance, Person)
-        .join(subquery, (Attendance.person_id == subquery.c.person_id)
-              & (Attendance.timestamp == subquery.c.latest_ts))
-        .outerjoin(Person, Person.id == Attendance.person_id)
-        .all()
-    )
-    on_site: List[Dict[str, Any]] = []
-    for attendance, person in latest_records:
-        if attendance.direction == "ENTRY" and attendance.access_granted:
-            on_site.append({
-                "person_id": attendance.person_id,
-                "name": (person.name if person else None) or attendance.person_name,
-                "shift_id": person.shift_id if person else None,
-                "entered_at": _iso(attendance.timestamp),
-            })
+    # Who is on site comes from the one owner (app.services.attendance_state),
+    # so the assistant, the gate and the Attendance page cannot disagree.
+    on_site: List[Dict[str, Any]] = [
+        {
+            "person_id": worker.person_id,
+            "name": worker.name,
+            "shift_id": worker.shift_id,
+            "entered_at": _iso(worker.entered_at),
+        }
+        for worker in get_on_site_workers(db)
+    ]
 
     check_ins_today = (
         db.query(Attendance)
