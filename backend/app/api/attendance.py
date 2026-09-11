@@ -19,6 +19,7 @@ from app.services.audit import (
     AUDIT_PPE_POLICY_CHANGED,
     record_audit_event,
 )
+from app.services.attendance_state import get_on_site_workers
 from app.services.auth import get_client_ip
 from app.services.rbac import ADMIN_ROLE, GENERAL_MANAGER_ROLE
 from app.services.persons import (
@@ -396,6 +397,37 @@ def clear_attendance_logs(request: Request, db: Session = Depends(get_db)):
         reviews_deleted=reviews_deleted,
         ppe_events_deleted=ppe_events_deleted,
         alerts_deleted=alerts_deleted,
+    )
+
+
+class OnSiteWorkerResponse(BaseModel):
+    person_id: str
+    name: Optional[str] = None
+    employee_id: Optional[str] = None
+    shift_id: Optional[str] = None
+    entered_at: Optional[str] = None
+    attendance_id: str
+
+
+class OnSiteResponse(BaseModel):
+    count: int
+    workers: List[OnSiteWorkerResponse]
+
+
+@router.get("/on-site", response_model=OnSiteResponse)
+def get_on_site(db: Session = Depends(get_db)):
+    """The authoritative set of workers currently on site.
+
+    The Attendance page used to derive this in the browser from the most
+    recent page of attendance records, so a worker whose entry fell outside
+    that page silently dropped off the roster while the gate and the
+    assistant still counted them. It drives the Check-In/Check-Out locks, so
+    it needs one owner, computed over the whole table.
+    """
+    workers = get_on_site_workers(db)
+    return OnSiteResponse(
+        count=len(workers),
+        workers=[OnSiteWorkerResponse(**worker.to_dict()) for worker in workers],
     )
 
 

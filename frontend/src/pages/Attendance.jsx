@@ -65,7 +65,6 @@ const SHIFT_BLOCKS = [
 ];
 
 const SHIFT_LATE_GRACE_MINUTES = 20;
-const FACE_AUTO_APPROVE_THRESHOLD = 0.85;
 
 const cardVariants = {
   hidden: { opacity: 0, y: 18 },
@@ -241,15 +240,19 @@ function getEffectivePendingReview(review, gateStatus) {
     gateStatus.confidence != null
       ? Math.max(review.confidence || 0, gateStatus.confidence)
       : review.confidence;
-  let reviewReasons = Array.isArray(gateStatus.review_reasons)
+  const reviewReasons = Array.isArray(gateStatus.review_reasons)
     ? gateStatus.review_reasons
     : Array.isArray(review.review_reasons)
       ? review.review_reasons
       : [];
 
-  if (confidence != null && confidence >= FACE_AUTO_APPROVE_THRESHOLD) {
-    reviewReasons = reviewReasons.filter((reason) => reason !== "face_confidence");
-  }
+  // The server owns the thresholds (GATE_REVIEW_THRESHOLD and friends) and
+  // puts its decision in review_reasons. This used to re-apply a hardcoded
+  // 0.85 here and strip "face_confidence" from the server's answer, so the
+  // operator saw a review whose stated reason had been edited away in the
+  // browser -- and it went stale the moment a site tuned the real threshold.
+  // The live gate status is still preferred over the stored row because it is
+  // fresher, but its reasons are passed through untouched.
   const livePpeDetails = normalizePpeDetails(gateStatus.ppe_details);
   const hasLivePpeSignal =
     Boolean(gateStatus.ppe_details) &&

@@ -19,6 +19,7 @@ from app.db.connection import SessionLocal
 from app.db.models import Attendance, GatePolicy, GateReview, Person
 from app.inference.face_recognizer import cosine_similarity, face_recognizer
 from app.inference.ppe_detector import ppe_detector
+from app.services.attendance_state import get_on_site_person_ids
 from app.services.gate_compliance import (
     create_alert_record,
     create_event_record,
@@ -337,25 +338,10 @@ class GateAttendanceRecognizer:
 
         db = SessionLocal()
         try:
-            records = (
-                db.query(Attendance)
-                .filter(
-                    Attendance.person_id.isnot(None),
-                )
-                .order_by(Attendance.timestamp.desc())
-                .all()
-            )
-            latest_by_person: Dict[str, Attendance] = {}
-            for record in records:
-                if not record.person_id or record.person_id in latest_by_person:
-                    continue
-                latest_by_person[record.person_id] = record
-
-            on_site_ids = {
-                person_id
-                for person_id, record in latest_by_person.items()
-                if record.access_granted and record.direction == "ENTRY"
-            }
+            # One owner for this answer (app.services.attendance_state); the
+            # gate keeps only its short cache. This used to load the entire
+            # attendance table on every miss and fold it in Python.
+            on_site_ids = get_on_site_person_ids(db)
             self.on_site_cache_ids = on_site_ids
             self.on_site_cache_loaded_at = now_ts
             return set(on_site_ids)
