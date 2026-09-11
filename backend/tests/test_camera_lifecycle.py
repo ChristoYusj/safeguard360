@@ -167,6 +167,38 @@ def test_a_capture_loop_that_dies_marks_the_camera_stopped(manager):
     assert manager.error == "Camera stopped delivering frames."
 
 
+def test_a_session_that_ended_on_its_own_is_cleaned_up_by_the_next_start(manager, monkeypatch):
+    """The capture loop cannot tear itself down: a thread cannot join itself.
+
+    So it only flips running to False, and start() has to notice. It used to
+    gate teardown on `if self.running:` alone, which skipped it and leaked the
+    dead VideoCapture -- and on Windows a leaked handle keeps the device busy,
+    so the feed never came back without restarting the process.
+    """
+    dead_capture = OrderRecordingCapture(threading.Event())
+    manager.cap = dead_capture
+    manager.running = True
+    manager.stop_event.clear()
+
+    manager._capture_loop()  # the device died; the loop retires the session
+
+    assert manager.running is False
+    assert manager.cap is dead_capture, "the loop cannot release it from inside itself"
+
+    opened = []
+
+    def fake_open(device_id):
+        opened.append(device_id)
+        return None, "TEST"  # open fails, which is fine: teardown already ran
+
+    monkeypatch.setattr(manager, "_open_webcam_capture", fake_open)
+
+    manager.start(source_type="webcam", source_id="0", owner_module="attendance")
+
+    assert dead_capture.released is True, "the next start() leaked the dead capture"
+    assert opened == [0], "start() never got as far as opening the device"
+
+
 def test_a_real_stop_is_not_reported_as_a_failure(manager):
     manager.cap = None
     manager.running = True

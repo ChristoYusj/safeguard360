@@ -8,11 +8,15 @@ cannot drift back into the loop.
 """
 from __future__ import annotations
 
+import inspect
 import math
+import re
 
 import pytest
+from pydantic import ValidationError
 
-from app.config.settings import get_settings
+from app.api.attendance import _resolve_override_reason_type
+from app.config.settings import Settings, get_settings
 from app.db.connection import SessionLocal
 from app.db.models import Event
 from app.services.gate_attendance import GateAttendanceRecognizer
@@ -155,7 +159,7 @@ def test_an_ambiguous_match_is_its_own_review_reason():
     recognizer = _recognizer()
 
     reasons = recognizer._build_review_reasons(
-        review_band_match=True,
+        review_band_match=False,
         ppe_details={"status": "compliant"},
         ambiguous_match=True,
     )
@@ -168,6 +172,68 @@ def test_an_ambiguous_match_is_its_own_review_reason():
         review_band_match=True, ppe_details={"status": "compliant"}
     )
     assert plain == ["face_confidence"]
+
+
+def test_both_face_reasons_are_recorded_when_both_apply():
+    """A match can be in the review band AND too close to another worker.
+
+    Reporting only one of them loses information the operator needs, and left
+    the permanent record with no override reason type.
+    """
+    reasons = _recognizer()._build_review_reasons(
+        review_band_match=True,
+        ppe_details={"status": "compliant"},
+        ambiguous_match=True,
+    )
+
+    assert reasons == ["face_confidence", "ambiguous_match"]
+    assert _resolve_override_reason_type(reasons) == "face_confidence"
+    assert _resolve_override_reason_type(["ambiguous_match"]) == "face_confidence"
+    assert _resolve_override_reason_type(["ambiguous_match", "missing_helmet"]) == "combined"
+
+
+# --- only qualifying frames count toward a confirmation -----------------------
+
+
+def test_a_sub_threshold_frame_does_not_count_toward_the_confirmations():
+    """The below-band branch used to claim the candidate and set the streak to
+    1, so three confirmations could be reached with two qualifying frames."""
+    source = inspect.getsource(GateAttendanceRecognizer.process_frame)
+    below_branch = source.split('if self._match_band(match_percent) == "below":', 1)[1]
+    below_branch = below_branch.split("self.unknown_face_streak = 0", 1)[1]
+    below_branch = below_branch.split("return frame, events", 1)[0]
+
+    assert "last_candidate_streak" not in below_branch
+    assert "last_candidate_person_id" not in below_branch
+
+
+# --- the literals cannot come back -------------------------------------------
+
+
+def test_no_threshold_literal_remains_in_the_decision_path():
+    """A guard, not a behaviour test.
+
+    The band helper is small and pure, so the unit tests above would still pass
+    if someone put `79 <= match_percent <= 84` back at a call site. This reads
+    the source and fails if a bare threshold comparison reappears.
+    """
+    source = inspect.getsource(GateAttendanceRecognizer.process_frame)
+    offenders = re.findall(r"(?:match_percent|overall_percent)\s*[<>=]=?\s*\d+", source)
+    offenders += re.findall(r"\d+\s*[<>=]=?\s*(?:match_percent|overall_percent)", source)
+
+    assert offenders == [], f"threshold literals are back in the decision path: {offenders}"
+
+
+# --- a malformed gate configuration stops the app ------------------------------
+
+
+def test_an_inverted_threshold_pair_is_refused_at_construction():
+    with pytest.raises(ValidationError):
+        Settings(GATE_REVIEW_THRESHOLD=0.95, GATE_AUTO_PASS_THRESHOLD=0.85)
+    with pytest.raises(ValidationError):
+        Settings(GATE_REQUIRED_CONFIRMATIONS=0)
+    with pytest.raises(ValidationError):
+        Settings(GATE_MATCH_MARGIN=-0.1)
 
 
 # --- unknown faces leave a record --------------------------------------------
