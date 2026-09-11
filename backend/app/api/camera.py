@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import cv2
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.camera.manager import camera_manager
 from app.config.settings import get_settings
@@ -182,9 +183,14 @@ def _assert_camera_access(request: Request, *, owner_module: Optional[str], mode
     raise HTTPException(status_code=403, detail="Forbidden.")
 
 
-@router.get("/sources", response_model=List[CameraSourceInfo])
-async def list_camera_sources():
-    """List available camera sources."""
+def _probe_camera_sources() -> List[CameraSourceInfo]:
+    """Open every webcam index in turn to see which ones deliver a frame.
+
+    Seconds of blocking OpenCV work. It runs on a worker thread, never on the
+    event loop: while this sat in an `async def` the whole server stopped
+    answering, and the live websocket clients were dropped as "slow" by their
+    own send timeout.
+    """
     sources = []
     
     # Check for webcams (check indices 0-5)
@@ -223,13 +229,21 @@ async def list_camera_sources():
     return sources
 
 
+@router.get("/sources", response_model=List[CameraSourceInfo])
+async def list_camera_sources():
+    """List available camera sources."""
+    return await run_in_threadpool(_probe_camera_sources)
+
+
 @router.post("/start", response_model=CameraStateResponse)
 async def start_camera(request: Request, payload: CameraStartRequest):
     """Start camera capture."""
     _assert_camera_access(request, owner_module=payload.owner_module)
     source_id = validate_camera_source(payload.source_type, payload.source_id or "0")
 
-    success = camera_manager.start(
+    # Opening a device includes a warm-up read loop of up to ~2.5 s.
+    success = await run_in_threadpool(
+        camera_manager.start,
         source_type=payload.source_type,
         source_id=source_id,
         owner_module=payload.owner_module,
@@ -265,7 +279,9 @@ async def stop_camera(
             status_code=409,
             detail=f"Camera is currently controlled by {camera_manager.get_owner_label()}.",
         )
-    camera_manager.stop()
+    # stop() joins the capture and worker threads, which can take seconds
+    # when a read is stuck against a disconnected device.
+    await run_in_threadpool(camera_manager.stop)
     return _build_camera_response(_get_request_role(request))
 
 
@@ -309,5 +325,11 @@ async def set_camera_mode(
             detail=f"Camera is currently controlled by {camera_manager.get_owner_label()}.",
         )
     
-    camera_manager.set_mode(mode)
-    return _build_camera_response()
+    # set_mode takes the lifecycle lock, which a stop() may be holding.
+    await run_in_threadpool(camera_manager.set_mode, mode)
+    # Scoped to the caller's role like every other camera response. This one
+    # passed no role at all, which fell through to the strictest branch and
+    # stripped the gate payload from the safety operator who had just asked
+    # for gate mode -- the UI got a reply with gate: null and had to wait for
+    # the next poll to see the state it had just switched on.
+    return _build_camera_response(_get_request_role(http_request))
